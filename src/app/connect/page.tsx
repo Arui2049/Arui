@@ -5,10 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Store, CheckCircle2, ExternalLink, ShieldCheck, Copy, Check, MessageSquare, LogOut, ArrowRight, Code, Sparkles, AlertTriangle } from "lucide-react";
 import { track } from "@/lib/track-client";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 function EmbedCodeBlock({ shop }: { shop: string }) {
   const [copied, setCopied] = useState(false);
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = getPublicAppUrl();
   const code = `<script src="${origin}/api/widget/embed?shop=${encodeURIComponent(shop)}"></script>`;
 
   const copy = async () => {

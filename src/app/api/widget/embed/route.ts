@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isValidShopDomain, generateWidgetToken } from "@/lib/crypto";
 import { getShop } from "@/lib/store";
+import { getAppUrlFromRequest } from "@/lib/app-url";
 
 function escapeJS(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
@@ -24,7 +25,7 @@ export async function GET(req: Request) {
   }
 
   const token = generateWidgetToken(shop);
-  const origin = new URL(req.url).origin;
+  const origin = getAppUrlFromRequest(req);
   const safeToken = escapeJS(token);
   const widgetUrl = `${origin}/widget/${encodeURIComponent(shop)}?token=${safeToken}`;
   const eventUrl = `${origin}/api/events`;

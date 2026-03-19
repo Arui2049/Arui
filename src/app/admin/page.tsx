@@ -8,10 +8,11 @@ import { SetupChecklist } from "@/components/admin/SetupChecklist";
 import { InstallGuide } from "@/components/admin/InstallGuide";
 import { AnalyticsCharts } from "@/components/admin/AnalyticsCharts";
 import { track } from "@/lib/track-client";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 interface DailyCount { date: string; count: number }
 interface TypeBreakdown { type: string; count: number }
-interface Usage { shop: string; month: string; ticketCount: number; freeRemaining: number; overageCount: number; overageCostDisplay: string; envWarnings?: string[]; apiKeyConfigured?: boolean; hasTestTicket?: boolean; widgetInstalled?: boolean; dailyCounts?: DailyCount[]; typeBreakdown?: TypeBreakdown[]; resolvedRate?: number }
+interface Usage { shop: string; month: string; ticketCount: number; freeRemaining: number; overageCount: number; overageCostDisplay: string; hasTestTicket?: boolean; widgetInstalled?: boolean; dailyCounts?: DailyCount[]; typeBreakdown?: TypeBreakdown[]; resolvedRate?: number }
 interface EventDay { date: string; count: number }
 interface TopSource { source: string; count: number }
 interface Acquisition {
@@ -51,7 +52,7 @@ function StatCard({ icon: Icon, label, value, sub, color }: { icon: typeof BarCh
 
 function EmbedCodeCard({ shop }: { shop: string }) {
   const [copied, setCopied] = useState(false);
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = getPublicAppUrl();
   const code = `<script src="${origin}/api/widget/embed?shop=${encodeURIComponent(shop)}"></script>`;
 
   const copy = async () => {
@@ -61,7 +62,7 @@ function EmbedCodeCard({ shop }: { shop: string }) {
   };
 
   return (
-    <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm transition-all hover:shadow-md">
+    <div id="embed-code" className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm transition-all hover:shadow-md">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-100"><Code className="h-4 w-4 text-violet-600" /></div>
@@ -187,23 +188,10 @@ export default function AdminPage() {
       </div>
 
       <div className="mx-auto max-w-5xl px-6 py-8">
-        {/* Env warnings */}
-        {u?.envWarnings && u.envWarnings.length > 0 && (
-          <div className="animate-slide-down mb-6 rounded-xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50/50 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-amber-800">
-              <Info className="h-4 w-4" />Configuration
-            </div>
-            {u.envWarnings.map((w, i) => (
-              <p key={i} className="text-xs text-amber-700">{w}</p>
-            ))}
-          </div>
-        )}
-
         {/* Setup checklist */}
         {u && (
           <SetupChecklist
             storeConnected={!!u.shop}
-            apiKeyConfigured={!!u.apiKeyConfigured}
             widgetInstalled={!!u.widgetInstalled}
             hasTestTicket={!!u.hasTestTicket}
           />
