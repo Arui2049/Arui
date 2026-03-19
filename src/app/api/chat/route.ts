@@ -283,26 +283,39 @@ function buildMockSteps(messages: ChatMessage[]): MockStep[] {
 
 function buildMockSSE(steps: MockStep[]): string {
   const lines: string[] = [];
-
-  lines.push(`data: {"type":"start"}\n`);
-
   const msgId = `mock-${Date.now()}`;
+  let idSeq = 0;
+  const nextId = (prefix: string) => `${prefix}-${msgId}-${idSeq++}`;
 
-  for (const step of steps) {
-    if (step.toolName && step.toolResult) {
-      const callId = `call-${Date.now().toString(36)}`;
-      lines.push(`data: ${JSON.stringify({ type: "tool-call", toolCallId: callId, toolName: step.toolName, args: step.toolArgs })}\n`);
-      lines.push(`data: ${JSON.stringify({ type: "tool-result", toolCallId: callId, toolName: step.toolName, result: step.toolResult })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "start", messageId: msgId })}\n`);
+
+  const toolSteps = steps.filter(s => s.toolName && s.toolResult);
+  const textSteps = steps.filter(s => s.text);
+
+  if (toolSteps.length > 0) {
+    lines.push(`data: ${JSON.stringify({ type: "start-step" })}\n`);
+    for (const step of toolSteps) {
+      const callId = nextId("call");
+      lines.push(`data: ${JSON.stringify({ type: "tool-input-start", toolCallId: callId, toolName: step.toolName })}\n`);
+      lines.push(`data: ${JSON.stringify({ type: "tool-input-available", toolCallId: callId, toolName: step.toolName, input: step.toolArgs || {} })}\n`);
+      lines.push(`data: ${JSON.stringify({ type: "tool-output-available", toolCallId: callId, output: step.toolResult })}\n`);
     }
-    if (step.text) {
-      for (const char of step.text) {
-        lines.push(`data: ${JSON.stringify({ type: "text-delta", textDelta: char })}\n`);
-      }
-    }
+    lines.push(`data: ${JSON.stringify({ type: "finish-step" })}\n`);
   }
 
-  lines.push(`data: ${JSON.stringify({ type: "step-finish", messageId: msgId, finishReason: "stop" })}\n`);
-  lines.push(`data: ${JSON.stringify({ type: "finish", messageId: msgId, finishReason: "stop" })}\n`);
+  if (textSteps.length > 0) {
+    lines.push(`data: ${JSON.stringify({ type: "start-step" })}\n`);
+    for (const step of textSteps) {
+      const textId = nextId("txt");
+      lines.push(`data: ${JSON.stringify({ type: "text-start", id: textId })}\n`);
+      lines.push(`data: ${JSON.stringify({ type: "text-delta", id: textId, delta: step.text })}\n`);
+      lines.push(`data: ${JSON.stringify({ type: "text-end", id: textId })}\n`);
+    }
+    lines.push(`data: ${JSON.stringify({ type: "finish-step" })}\n`);
+  }
+
+  lines.push(`data: ${JSON.stringify({ type: "finish" })}\n`);
+  lines.push(`data: [DONE]\n`);
 
   return lines.join("\n");
 }
@@ -310,26 +323,20 @@ function buildMockSSE(steps: MockStep[]): string {
 function buildErrorSSE(message: string): string {
   const lines: string[] = [];
   const msgId = `err-${Date.now()}`;
-  lines.push(`data: {"type":"start"}\n`);
-  for (const char of message) {
-    lines.push(`data: ${JSON.stringify({ type: "text-delta", textDelta: char })}\n`);
-  }
-  lines.push(`data: ${JSON.stringify({ type: "step-finish", messageId: msgId, finishReason: "stop" })}\n`);
-  lines.push(`data: ${JSON.stringify({ type: "finish", messageId: msgId, finishReason: "stop" })}\n`);
+  const textId = `txt-${msgId}`;
+  lines.push(`data: ${JSON.stringify({ type: "start", messageId: msgId })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "start-step" })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "text-start", id: textId })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "text-delta", id: textId, delta: message })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "text-end", id: textId })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "finish-step" })}\n`);
+  lines.push(`data: ${JSON.stringify({ type: "finish" })}\n`);
+  lines.push(`data: [DONE]\n`);
   return lines.join("\n");
 }
 
 function buildUsageLimitSSE(): string {
-  const lines: string[] = [];
-  const msgId = `limit-${Date.now()}`;
-  lines.push(`data: {"type":"start"}\n`);
-  const text = "Your free tier limit has been reached for this month (50 tickets). To continue using Auri, please contact us at support@imauri.com to upgrade your plan.";
-  for (const char of text) {
-    lines.push(`data: ${JSON.stringify({ type: "text-delta", textDelta: char })}\n`);
-  }
-  lines.push(`data: ${JSON.stringify({ type: "step-finish", messageId: msgId, finishReason: "stop" })}\n`);
-  lines.push(`data: ${JSON.stringify({ type: "finish", messageId: msgId, finishReason: "stop" })}\n`);
-  return lines.join("\n");
+  return buildErrorSSE("Your free tier limit has been reached for this month (50 tickets). To continue using Auri, please contact us at support@imauri.com to upgrade your plan.");
 }
 
 function sseResponse(body: string) {
@@ -337,7 +344,8 @@ function sseResponse(body: string) {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+      "Connection": "keep-alive",
+      "x-vercel-ai-ui-message-stream": "v1",
     },
   });
 }
@@ -381,13 +389,13 @@ export async function POST(req: Request) {
     }
   }
 
-  // Demo mode: no valid API key or no connected shop
-  if (!isLlmKeyValid()) {
+  // Demo mode: no connected live shop, OR no valid LLM API key
+  if (!liveShop || !isLlmKeyValid()) {
     const steps = buildMockSteps(messages);
     return sseResponse(buildMockSSE(steps));
   }
 
-  const { streamText, tool, stepCountIs } = await import("ai");
+  const { streamText, tool, stepCountIs, convertToModelMessages } = await import("ai");
   const { z } = await import("zod");
   const { apiKey, baseURL, model: modelName } = getLlmConfig();
 
@@ -412,7 +420,7 @@ export async function POST(req: Request) {
     // @ts-expect-error provider returns a model factory compatible with streamText
     model: (await provider())(modelName),
     system: buildSystemPrompt(liveShop ? customerEmail : undefined, shopSettings),
-    messages,
+    messages: await convertToModelMessages(messages),
     stopWhen: stepCountIs(5),
     tools: {
       lookup_orders: tool({

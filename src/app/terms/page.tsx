@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bot, ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 
 export const metadata = {
   title: "Terms of Service — Auri",

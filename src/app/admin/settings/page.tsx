@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bot, LogOut, Save, Check, Loader2, Settings, Shield, MessageSquare, Bell } from "lucide-react";
+import { ArrowLeft, LogOut, Save, Check, Loader2, Settings, Shield, MessageSquare, Bell } from "lucide-react";
 
 interface ShopSettings {
   shop: string;

@@ -2,24 +2,29 @@ import { NextResponse } from "next/server";
 import { isValidShopDomain, generateNonce } from "@/lib/crypto";
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  const url = new URL(req.url);
+  const { searchParams } = url;
   const shop = searchParams.get("shop");
+  const appUrl = (process.env.APP_URL || url.origin).replace(/\/+$/, "");
+
+  function redirectError(msg: string) {
+    return NextResponse.redirect(`${appUrl}/connect?error=${encodeURIComponent(msg)}`);
+  }
 
   if (!shop) {
-    return NextResponse.json({ error: "Missing shop parameter" }, { status: 400 });
+    return redirectError("Missing shop parameter.");
   }
 
   if (!isValidShopDomain(shop)) {
-    return NextResponse.json({ error: "Invalid shop domain. Must be xxx.myshopify.com" }, { status: 400 });
+    return redirectError("Invalid shop domain. Must be xxx.myshopify.com");
   }
 
   const apiKey = process.env.SHOPIFY_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "SHOPIFY_API_KEY is not configured" }, { status: 500 });
+    return redirectError("SHOPIFY_API_KEY is not configured on the server.");
   }
 
   const scopes = process.env.SHOPIFY_SCOPES || "read_orders,write_returns";
-  const appUrl = process.env.APP_URL || "http://localhost:3000";
   const redirect = `${appUrl}/api/shopify/oauth/callback`;
   const nonce = generateNonce();
 

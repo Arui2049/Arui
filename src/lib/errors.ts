@@ -16,8 +16,6 @@ export function captureException(error: unknown, context?: ErrorContext) {
 
   if (SENTRY_DSN) {
     try {
-      // Avoid bundlers resolving optional dependency at build time.
-      // eslint-disable-next-line no-eval
       const req = (0, eval)("require") as (id: string) => unknown;
       const Sentry = req("@sentry/nextjs") as { setContext?: (name: string, ctx: unknown) => void; captureException?: (e: unknown) => void };
       if (context && typeof Sentry?.setContext === "function") Sentry.setContext("returnbot", context);
@@ -34,8 +32,6 @@ export function captureMessage(message: string, level: "info" | "warning" | "err
 
   if (SENTRY_DSN) {
     try {
-      // Avoid bundlers resolving optional dependency at build time.
-      // eslint-disable-next-line no-eval
       const req = (0, eval)("require") as (id: string) => unknown;
       const Sentry = req("@sentry/nextjs") as { setContext?: (name: string, ctx: unknown) => void; captureMessage?: (m: string, lvl: string) => void };
       if (context && typeof Sentry?.setContext === "function") Sentry.setContext("returnbot", context);

@@ -20,31 +20,37 @@ function safeJsonCookie(raw: string | undefined): Record<string, unknown> | unde
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
+  const appUrl = (process.env.APP_URL || url.origin).replace(/\/+$/, "");
+
+  function redirectError(msg: string) {
+    return NextResponse.redirect(`${appUrl}/connect?error=${encodeURIComponent(msg)}`);
+  }
+
   const shop = url.searchParams.get("shop");
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
 
   if (!shop || !code || !state) {
-    return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
+    return redirectError("Missing required parameters from Shopify.");
   }
 
   if (!isValidShopDomain(shop)) {
-    return NextResponse.json({ error: "Invalid shop domain" }, { status: 400 });
+    return redirectError("Invalid shop domain.");
   }
 
   const savedState = req.cookies.get("rb_oauth_state")?.value;
   if (!savedState || savedState !== state) {
-    return NextResponse.json({ error: "State mismatch — possible CSRF attack" }, { status: 403 });
+    return redirectError("State mismatch — please try connecting again.");
   }
 
   if (!verifyShopifyHmac(url.searchParams)) {
-    return NextResponse.json({ error: "HMAC verification failed" }, { status: 403 });
+    return redirectError("HMAC verification failed — please try connecting again.");
   }
 
   const apiKey = process.env.SHOPIFY_API_KEY;
   const apiSecret = process.env.SHOPIFY_API_SECRET;
   if (!apiKey || !apiSecret) {
-    return NextResponse.json({ error: "Shopify credentials not configured" }, { status: 500 });
+    return redirectError("Shopify credentials (SHOPIFY_API_KEY / SHOPIFY_API_SECRET) are not configured on the server.");
   }
 
   try {
@@ -89,7 +95,6 @@ export async function GET(req: NextRequest) {
 
     // Register uninstall webhook (non-fatal)
     try {
-      const appUrl = process.env.APP_URL || "http://localhost:3000";
       const webhookData = JSON.stringify({
         webhook: {
           topic: "app/uninstalled",
@@ -116,7 +121,6 @@ export async function GET(req: NextRequest) {
       // Non-fatal
     }
 
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
     const response = NextResponse.redirect(`${appUrl}/admin`);
 
     response.cookies.set("rb_session", signSession(shop), {
@@ -131,9 +135,7 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "OAuth token exchange failed" },
-      { status: 500 },
-    );
+    const msg = err instanceof Error ? err.message : "OAuth token exchange failed";
+    return redirectError(msg);
   }
 }

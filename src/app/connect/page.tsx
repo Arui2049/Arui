@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import Link from "next/link";
-import { ArrowLeft, Store, CheckCircle2, ExternalLink, ShieldCheck, Copy, Check, MessageSquare, LogOut, ArrowRight, Code, Sparkles } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, Store, CheckCircle2, ExternalLink, ShieldCheck, Copy, Check, MessageSquare, LogOut, ArrowRight, Code, Sparkles, AlertTriangle } from "lucide-react";
 import { track } from "@/lib/track-client";
 
 function EmbedCodeBlock({ shop }: { shop: string }) {
@@ -38,6 +39,16 @@ function EmbedCodeBlock({ shop }: { shop: string }) {
 }
 
 export default function ConnectPage() {
+  return (
+    <Suspense>
+      <ConnectPageContent />
+    </Suspense>
+  );
+}
+
+function ConnectPageContent() {
+  const searchParams = useSearchParams();
+  const oauthError = searchParams.get("error");
   const [shop, setShop] = useState("");
   const [busy, setBusy] = useState(false);
   const [session, setSession] = useState<{ authenticated: boolean; shop?: string } | null>(null);
@@ -154,6 +165,20 @@ export default function ConnectPage() {
           </div>
           <h1 className="mb-1 text-center text-xl font-bold text-zinc-900">Connect Your Store</h1>
           <p className="mb-7 text-center text-sm text-zinc-500">Link your Shopify store to enable AI-powered returns &amp; tracking.</p>
+
+          {oauthError && (
+            <div className="mb-5 rounded-xl border border-red-200/60 bg-red-50 p-4">
+              <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-red-800">
+                <AlertTriangle className="h-4 w-4" />Connection Failed
+              </div>
+              <p className="text-xs text-red-700">{oauthError}</p>
+              <p className="mt-2 text-[11px] text-red-600/80">
+                Make sure your Shopify app&apos;s <strong>Allowed redirection URL</strong> is set to{" "}
+                <code className="rounded bg-red-100 px-1 py-0.5 text-[10px]">{typeof window !== "undefined" ? window.location.origin : ""}/api/shopify/oauth/callback</code>
+              </p>
+            </div>
+          )}
+
           <div className="space-y-4">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-zinc-700">Store Domain</label>

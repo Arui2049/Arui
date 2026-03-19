@@ -11,15 +11,9 @@ import { EscalationCard } from "../widgets/EscalationCard";
 import { track } from "@/lib/track-client";
 
 function ToolPartRenderer({ part }: { part: Record<string, unknown> }) {
-  const ptype = String(part.type || "");
   const state = String(part.state || "");
   const data = (part.output || part.result) as Record<string, unknown> | undefined;
-
-  const toolName = ptype === "dynamic-tool"
-    ? String(part.toolName || "")
-    : ptype.startsWith("tool-")
-      ? ptype.slice(5)
-      : "";
+  const toolName = String(part.toolName || "");
 
   if (!data || state === "call" || state === "partial-call" || state === "streaming") {
     const labels: Record<string, string> = {
@@ -189,7 +183,15 @@ function ChatInterfaceInner({ shop, customerEmail, widgetToken }: ChatInterfaceP
                       </div>
                     );
                   }
-                  if (ptype.startsWith("tool-") || ptype === "dynamic-tool") {
+                  if (ptype === "tool-call") {
+                    const p = part as unknown as Record<string, unknown>;
+                    const hasResult = msg.parts.some(
+                      (other) => (other.type as string) === "tool-result" && (other as unknown as Record<string, unknown>).toolCallId === p.toolCallId,
+                    );
+                    if (hasResult) return null;
+                    return <ToolPartRenderer key={i} part={p} />;
+                  }
+                  if (ptype === "tool-result" || ptype === "dynamic-tool") {
                     return <ToolPartRenderer key={i} part={part as unknown as Record<string, unknown>} />;
                   }
                   return null;

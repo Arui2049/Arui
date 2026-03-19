@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bot, LogOut, Ticket, Search, Filter, Package, RotateCcw, ArrowRightLeft, HelpCircle, MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, LogOut, Ticket, Search, Filter, Package, RotateCcw, ArrowRightLeft, HelpCircle, MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
 
 interface TicketRecord {
   id: string;

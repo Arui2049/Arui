@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BarChart3, MessageSquare, Store, DollarSign, TrendingUp, Copy, Check, ExternalLink, AlertTriangle, Code, LogOut, Bot, Info, ArrowRight, Ticket, Settings } from "lucide-react";
+import { BarChart3, MessageSquare, Store, DollarSign, TrendingUp, Copy, Check, ExternalLink, AlertTriangle, Code, LogOut, Info, ArrowRight, Ticket, Settings } from "lucide-react";
 import { SetupChecklist } from "@/components/admin/SetupChecklist";
 import { InstallGuide } from "@/components/admin/InstallGuide";
 import { AnalyticsCharts } from "@/components/admin/AnalyticsCharts";
