@@ -16,19 +16,44 @@ interface BillingState {
   shop: string;
   status: string;
   subscriptionId?: string;
+  planKey?: string;
   planName?: string;
   currentPeriodEnd?: string;
   trialDays?: number;
+  usageLineItemId?: string;
+  cappedAmountUsd?: number;
   checkedAt: string;
 }
+
+interface PlanDef {
+  key: string;
+  name: string;
+  monthlyPriceUsd: number;
+  includedTickets: number;
+  overagePriceCentsPerTicket: number;
+  cappedAmountUsd: number;
+  trialDays: number;
+  highlight?: boolean;
+}
+
+const PLANS: PlanDef[] = [
+  { key: "free", name: "Free", monthlyPriceUsd: 0, includedTickets: 50, overagePriceCentsPerTicket: 0, cappedAmountUsd: 0, trialDays: 0 },
+  { key: "starter", name: "Starter", monthlyPriceUsd: 19, includedTickets: 200, overagePriceCentsPerTicket: 0, cappedAmountUsd: 0, trialDays: 14 },
+  { key: "growth", name: "Growth", monthlyPriceUsd: 49, includedTickets: 1000, overagePriceCentsPerTicket: 6, cappedAmountUsd: 149, trialDays: 14, highlight: true },
+  { key: "pro", name: "Pro", monthlyPriceUsd: 99, includedTickets: 3000, overagePriceCentsPerTicket: 4, cappedAmountUsd: 249, trialDays: 14 },
+];
 
 interface Usage {
   shop: string;
   month: string;
   ticketCount: number;
+  includedTickets: number;
   freeRemaining: number;
   overageCount: number;
   overageCostDisplay: string;
+  cappedAmountUsd: number;
+  planKey: string;
+  planName: string;
   hasTestTicket?: boolean;
   widgetInstalled?: boolean;
   dailyCounts?: DailyCount[];
@@ -163,9 +188,11 @@ export default function AdminPage() {
     router.push("/connect");
   };
 
-  const pct = u ? Math.min(100, (u.ticketCount / 50) * 100) : 0;
+  const included = u?.includedTickets ?? 50;
+  const pct = u ? Math.min(100, (u.ticketCount / included) * 100) : 0;
   const limitReached = u ? (u.freeRemaining <= 0 && !u.paidActive) : false;
-  const nearLimit = u ? u.freeRemaining > 0 && u.freeRemaining <= 10 : false;
+  const nearLimit = u ? u.freeRemaining > 0 && u.freeRemaining <= Math.min(10, included * 0.1) : false;
+  const activePlanKey = u?.planKey || (u?.paidActive ? (u.billing?.planKey || "starter") : "free");
   const pv14 = acq?.pageViews14d?.reduce((s, d) => s + d.count, 0) ?? 0;
   const cs14 = acq?.connectStarts14d?.reduce((s, d) => s + d.count, 0) ?? 0;
   const ok14 = acq?.connectSuccess14d?.reduce((s, d) => s + d.count, 0) ?? 0;
@@ -266,29 +293,14 @@ export default function AdminPage() {
             <AlertTriangle className="h-5 w-5 shrink-0 text-red-500" />
             <div className="flex-1">
               <div className="text-sm font-semibold text-red-800">Free tier limit reached</div>
-              <p className="text-xs text-red-600">Your 50 free tickets have been used. Upgrade to continue serving customers.</p>
+              <p className="text-xs text-red-600">Your {included} free tickets have been used. Upgrade to continue serving customers.</p>
             </div>
-            <button
-              type="button"
-              disabled={billingBusy}
-              onClick={async () => {
-                setBillingBusy(true);
-                try {
-                  const r = await fetch("/api/billing/subscribe", { method: "POST" });
-                  const data = await r.json().catch(() => ({}));
-                  if (r.ok && data.confirmationUrl) {
-                    window.location.href = String(data.confirmationUrl);
-                    return;
-                  }
-                  alert(String(data.error || "Failed to start billing flow"));
-                } finally {
-                  setBillingBusy(false);
-                }
-              }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-red-700 hover:shadow-md disabled:opacity-60"
+            <a
+              href="#billing"
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-red-700 hover:shadow-md"
             >
-              {billingBusy ? "Starting..." : "Upgrade"}
-            </button>
+              Choose a plan
+            </a>
           </div>
         )}
         {nearLimit && !limitReached && (
@@ -304,9 +316,9 @@ export default function AdminPage() {
         {/* Stat cards */}
         <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <StatCard icon={MessageSquare} label="Tickets" value={u?.ticketCount ?? "—"} sub="This month" color="violet" />
-          <StatCard icon={BarChart3} label="Free Remaining" value={u?.freeRemaining ?? "—"} sub="of 50 included" color={limitReached ? "red" : nearLimit ? "amber" : "emerald"} />
-          <StatCard icon={DollarSign} label="Overage" value={u?.overageCostDisplay ?? "$0.00"} sub={`${u?.overageCount ?? 0} extra tickets`} color="amber" />
-          <StatCard icon={TrendingUp} label="Avg Resolution" value="~2 min" sub="AI-powered" color="blue" />
+          <StatCard icon={BarChart3} label="Remaining" value={u?.freeRemaining ?? "—"} sub={`of ${included} included`} color={limitReached ? "red" : nearLimit ? "amber" : "emerald"} />
+          <StatCard icon={DollarSign} label="Overage" value={u?.overageCostDisplay ?? "$0.00"} sub={u?.cappedAmountUsd ? `cap $${u.cappedAmountUsd}/mo` : `${u?.overageCount ?? 0} extra`} color="amber" />
+          <StatCard icon={TrendingUp} label="Plan" value={u?.planName ?? "Free"} sub={u?.paidActive ? `$${PLANS.find(p => p.key === activePlanKey)?.monthlyPriceUsd ?? 0}/mo` : "No charge"} color="blue" />
         </div>
 
         {/* Usage bar */}
@@ -322,8 +334,8 @@ export default function AdminPage() {
             />
           </div>
           <div className="flex justify-between text-xs text-zinc-500">
-            <span>{u?.ticketCount ?? 0} / 50 free tickets used</span>
-            {(u?.overageCount ?? 0) > 0 && <span className="font-medium text-amber-600">+{u?.overageCount} overage</span>}
+            <span>{u?.ticketCount ?? 0} / {included} tickets used</span>
+            {(u?.overageCount ?? 0) > 0 && <span className="font-medium text-amber-600">+{u?.overageCount} overage ({u?.overageCostDisplay})</span>}
           </div>
         </div>
 
@@ -393,7 +405,7 @@ export default function AdminPage() {
           )}
 
           {/* Store connection */}
-          <div id="billing" className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm">
+          <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100"><Store className="h-4 w-4 text-emerald-600" /></div>
               <h2 className="text-sm font-semibold text-zinc-900">Store Connection</h2>
@@ -411,82 +423,141 @@ export default function AdminPage() {
               </div>
               <Link href="/connect" className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-all hover:bg-zinc-50">Manage</Link>
             </div>
+          </div>
+        </div>
 
-            {/* Pricing info */}
-            <div className="mt-4 rounded-xl bg-gradient-to-br from-violet-50 to-indigo-50/50 p-4">
-              <h3 className="mb-2 text-xs font-semibold text-violet-800">Plan Details</h3>
-              <div className="space-y-1.5 text-[11px] text-violet-700">
-                <div className="flex justify-between"><span>Current status</span><span className="font-semibold">{u?.paidActive ? (u.billing?.planName || "Pro") : "Free"}</span></div>
-                <div className="flex justify-between"><span>Limit</span><span className="font-semibold">{u?.paidActive ? "Unlimited" : "50 tickets/mo"}</span></div>
-                <div className="flex justify-between"><span>Billing</span><span className="font-semibold">{u?.paidActive ? "Active" : "Trial available"}</span></div>
-                {u?.billing?.currentPeriodEnd && (
-                  <div className="flex justify-between"><span>Renews</span><span className="font-semibold">{new Date(u.billing.currentPeriodEnd).toLocaleDateString()}</span></div>
-                )}
-              </div>
-              {billingMsg && <div className="mt-2 text-[11px] text-violet-700/80">{billingMsg}</div>}
-              {!u?.paidActive && (
-                <button
-                  type="button"
-                  disabled={billingBusy}
-                  onClick={async () => {
-                    setBillingBusy(true);
-                    setBillingMsg("");
-                    try {
-                      const r = await fetch("/api/billing/subscribe", { method: "POST" });
-                      const data = await r.json().catch(() => ({}));
-                      if (r.ok && data.confirmationUrl) {
-                        window.location.href = String(data.confirmationUrl);
-                        return;
-                      }
-                      setBillingMsg(String(data.error || "Failed to start billing flow"));
-                    } finally {
-                      setBillingBusy(false);
-                    }
-                  }}
-                  className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-violet-700 disabled:opacity-60"
-                >
-                  {billingBusy ? "Starting..." : "Upgrade to Pro"}
-                </button>
-              )}
-              {u?.paidActive && (
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <a
-                    href={`https://${u.shop}/admin/settings/billing`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-lg border border-violet-200 bg-white px-3 py-2 text-center text-[11px] font-semibold text-violet-700 transition-all hover:bg-violet-50"
-                  >
-                    Manage in Shopify
-                  </a>
-                  <button
-                    type="button"
-                    disabled={billingBusy}
-                    onClick={async () => {
-                      if (!confirm("Cancel your Pro plan? This will stop future billing cycles.")) return;
-                      setBillingBusy(true);
-                      setBillingMsg("");
-                      try {
-                        const r = await fetch("/api/billing/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prorate: false }) });
-                        const data = await r.json().catch(() => ({}));
-                        if (!r.ok) {
-                          setBillingMsg(String(data.error || "Failed to cancel"));
-                          return;
-                        }
-                        // Refresh dashboard state
-                        const u2 = await fetch("/api/admin/usage").then((x) => x.ok ? x.json() : null).catch(() => null);
-                        if (u2) setU(u2);
-                        setBillingMsg("Canceled. Changes may take a moment to reflect.");
-                      } finally {
-                        setBillingBusy(false);
-                      }
-                    }}
-                    className="rounded-lg border border-red-200 bg-white px-3 py-2 text-[11px] font-semibold text-red-700 transition-all hover:bg-red-50 disabled:opacity-60"
-                  >
-                    {billingBusy ? "Working..." : "Cancel plan"}
-                  </button>
-                </div>
-              )}
+        {/* Pricing plans */}
+        <div id="billing" className="mb-8 mt-8">
+          <div className="mb-5 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-bold text-zinc-900">Choose your plan</h2>
+              <p className="text-xs text-zinc-500 mt-0.5">All paid plans include a 14-day free trial. Cancel anytime.</p>
             </div>
+            {u?.paidActive && (
+              <div className="flex items-center gap-2">
+                <a href={`https://${u.shop}/admin/settings/billing`} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition-all hover:bg-zinc-50">
+                  Manage in Shopify
+                </a>
+              </div>
+            )}
+          </div>
+          {billingMsg && <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800">{billingMsg}</div>}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {PLANS.map((plan) => {
+              const isCurrent = activePlanKey === plan.key;
+              const isHighlight = plan.highlight;
+              return (
+                <div
+                  key={plan.key}
+                  className={`relative flex flex-col rounded-2xl border p-5 transition-all ${isHighlight ? "border-violet-300 bg-gradient-to-b from-violet-50 to-white shadow-md" : "border-zinc-200/60 bg-white shadow-sm hover:shadow-md"}`}
+                >
+                  {isHighlight && (
+                    <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-violet-600 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+                      Most popular
+                    </div>
+                  )}
+                  <div className="mb-3">
+                    <div className="text-sm font-bold text-zinc-900">{plan.name}</div>
+                    <div className="mt-1 flex items-baseline gap-0.5">
+                      <span className="text-2xl font-extrabold text-zinc-900">${plan.monthlyPriceUsd}</span>
+                      {plan.monthlyPriceUsd > 0 && <span className="text-xs text-zinc-400">/mo</span>}
+                    </div>
+                  </div>
+                  <ul className="mb-5 flex-1 space-y-2 text-[11px] text-zinc-600">
+                    <li className="flex items-start gap-1.5">
+                      <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                      <span><span className="font-semibold">{plan.includedTickets.toLocaleString()}</span> tickets/month</span>
+                    </li>
+                    {plan.overagePriceCentsPerTicket > 0 ? (
+                      <li className="flex items-start gap-1.5">
+                        <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>${(plan.overagePriceCentsPerTicket / 100).toFixed(2)}/ticket overage (cap ${plan.cappedAmountUsd}/mo)</span>
+                      </li>
+                    ) : plan.key !== "free" ? (
+                      <li className="flex items-start gap-1.5">
+                        <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>Hard limit, no overage charges</span>
+                      </li>
+                    ) : (
+                      <li className="flex items-start gap-1.5">
+                        <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>No credit card required</span>
+                      </li>
+                    )}
+                    {plan.trialDays > 0 && (
+                      <li className="flex items-start gap-1.5">
+                        <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>{plan.trialDays}-day free trial</span>
+                      </li>
+                    )}
+                    <li className="flex items-start gap-1.5">
+                      <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                      <span>AI-powered returns & exchanges</span>
+                    </li>
+                  </ul>
+                  {isCurrent ? (
+                    <div className="flex flex-col items-center gap-1.5">
+                      <div className="w-full rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-center text-xs font-semibold text-emerald-700">
+                        Current plan
+                      </div>
+                      {plan.key !== "free" && (
+                        <button
+                          type="button"
+                          disabled={billingBusy}
+                          onClick={async () => {
+                            if (!confirm(`Cancel your ${plan.name} plan? You'll revert to the Free plan at the end of the billing period.`)) return;
+                            setBillingBusy(true);
+                            setBillingMsg("");
+                            try {
+                              const r = await fetch("/api/billing/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prorate: false }) });
+                              const data = await r.json().catch(() => ({}));
+                              if (!r.ok) { setBillingMsg(String(data.error || "Failed to cancel")); return; }
+                              const u2 = await fetch("/api/admin/usage").then((x) => x.ok ? x.json() : null).catch(() => null);
+                              if (u2) setU(u2);
+                              setBillingMsg("Plan canceled. Changes may take a moment to reflect.");
+                            } finally { setBillingBusy(false); }
+                          }}
+                          className="text-[10px] font-medium text-red-500 hover:text-red-700 disabled:opacity-60"
+                        >
+                          {billingBusy ? "Working..." : "Cancel plan"}
+                        </button>
+                      )}
+                    </div>
+                  ) : plan.key === "free" ? (
+                    <div className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-2 text-center text-xs font-medium text-zinc-400">
+                      {u?.paidActive ? "Downgrade by canceling" : "Current plan"}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={billingBusy}
+                      onClick={async () => {
+                        setBillingBusy(true);
+                        setBillingMsg("");
+                        try {
+                          const r = await fetch("/api/billing/subscribe", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ plan: plan.key }),
+                          });
+                          const data = await r.json().catch(() => ({}));
+                          if (r.ok && data.confirmationUrl) { window.location.href = String(data.confirmationUrl); return; }
+                          setBillingMsg(String(data.error || "Failed to start billing flow"));
+                        } finally { setBillingBusy(false); }
+                      }}
+                      className={`w-full rounded-lg px-4 py-2 text-xs font-semibold transition-all disabled:opacity-60 ${isHighlight ? "bg-violet-600 text-white hover:bg-violet-700 shadow-sm" : "border border-violet-200 bg-white text-violet-700 hover:bg-violet-50"}`}
+                    >
+                      {billingBusy ? "Starting..." : u?.paidActive ? `Switch to ${plan.name}` : `Start ${plan.trialDays}-day trial`}
+                    </button>
+                  )}
+                  {isCurrent && u?.billing?.currentPeriodEnd && (
+                    <div className="mt-2 text-center text-[10px] text-zinc-400">
+                      Renews {new Date(u.billing.currentPeriodEnd).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

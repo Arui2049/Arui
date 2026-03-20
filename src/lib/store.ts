@@ -79,10 +79,13 @@ export interface BillingState {
   shop: string;
   status: "none" | "active" | "trialing" | "past_due" | "canceled" | "expired" | "frozen" | "unknown";
   subscriptionId?: string;
+  planKey?: string;
   planName?: string;
   currentPeriodEnd?: string;
   trialDays?: number;
-  checkedAt: string; // ISO timestamp
+  usageLineItemId?: string;
+  cappedAmountUsd?: number;
+  checkedAt: string;
   raw?: unknown;
 }
 

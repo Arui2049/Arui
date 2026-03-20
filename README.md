@@ -103,7 +103,7 @@ src/
     widgets/         — A2UI components (OrderList, ReturnConfirmation, StatusTracker, EscalationCard)
     admin/           — Dashboard components
   lib/
-    billing/         — Usage tracking & free tier logic
+    billing/         — Multi-tier pricing, Shopify Billing API, usage tracking & overage
     shopify/         — Shopify API client & types
     crypto.ts        — HMAC, AES, session signing, widget tokens
     store.ts         — JSON file-based data persistence

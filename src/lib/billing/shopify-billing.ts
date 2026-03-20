@@ -1,5 +1,7 @@
 import { getShop, getBilling, saveBilling, type BillingState } from "@/lib/store";
 import { shopifyGraphql } from "@/lib/shopify/graphql";
+import { getPlan, getPlanByName, type PricingPlan } from "./plans";
+import { captureException } from "@/lib/errors";
 
 type ActiveSub = {
   id: string;
@@ -7,6 +9,16 @@ type ActiveSub = {
   status: string;
   currentPeriodEnd?: string | null;
   trialDays?: number | null;
+  lineItems?: Array<{
+    id: string;
+    plan?: {
+      pricingDetails?: {
+        __typename?: string;
+        cappedAmount?: { amount?: string };
+        terms?: string;
+      };
+    };
+  }>;
 };
 
 function mapStatus(status: string | undefined): BillingState["status"] {
@@ -35,6 +47,14 @@ export function getBillingCached(shop: string): BillingState | null {
   return getBilling(shop);
 }
 
+export function getEffectivePlan(b: BillingState | null): PricingPlan {
+  if (!b || !isPaidActive(b)) return getPlan("free");
+  if (b.planKey) return getPlan(b.planKey);
+  return getPlanByName(b.planName);
+}
+
+// --- Sync active subscription from Shopify ---
+
 export async function syncBillingFromShopify(shop: string): Promise<BillingState> {
   const record = getShop(shop);
   if (!record?.accessToken) {
@@ -52,6 +72,18 @@ export async function syncBillingFromShopify(shop: string): Promise<BillingState
           status
           currentPeriodEnd
           trialDays
+          lineItems {
+            id
+            plan {
+              pricingDetails {
+                __typename
+                ... on AppUsagePricing {
+                  cappedAmount { amount }
+                  terms
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -64,12 +96,7 @@ export async function syncBillingFromShopify(shop: string): Promise<BillingState
   );
 
   if (resp.errors && resp.errors.length > 0) {
-    const out: BillingState = {
-      shop,
-      status: "unknown",
-      checkedAt: new Date().toISOString(),
-      raw: resp,
-    };
+    const out: BillingState = { shop, status: "unknown", checkedAt: new Date().toISOString(), raw: resp };
     saveBilling(out);
     return out;
   }
@@ -77,13 +104,30 @@ export async function syncBillingFromShopify(shop: string): Promise<BillingState
   const subs = resp.data?.currentAppInstallation?.activeSubscriptions || [];
   const sub = subs[0];
 
+  let usageLineItemId: string | undefined;
+  let cappedAmountUsd: number | undefined;
+  if (sub?.lineItems) {
+    for (const li of sub.lineItems) {
+      if (li.plan?.pricingDetails?.__typename === "AppUsagePricing") {
+        usageLineItemId = li.id;
+        const raw = li.plan.pricingDetails.cappedAmount?.amount;
+        if (raw) cappedAmountUsd = Number(raw);
+      }
+    }
+  }
+
+  const plan = getPlanByName(sub?.name);
+
   const out: BillingState = {
     shop,
     status: mapStatus(sub?.status),
     subscriptionId: sub?.id,
+    planKey: plan.key !== "free" ? plan.key : undefined,
     planName: sub?.name,
     currentPeriodEnd: sub?.currentPeriodEnd || undefined,
     trialDays: sub?.trialDays ?? undefined,
+    usageLineItemId,
+    cappedAmountUsd,
     checkedAt: new Date().toISOString(),
     raw: resp,
   };
@@ -92,53 +136,84 @@ export async function syncBillingFromShopify(shop: string): Promise<BillingState
   return out;
 }
 
-export async function createProSubscription(shop: string, returnUrl: string): Promise<{ confirmationUrl: string }> {
+// --- Create subscription (recurring + optional usage line item) ---
+
+export async function createSubscription(shop: string, planKey: string, returnUrl: string): Promise<{ confirmationUrl: string }> {
   const record = getShop(shop);
   if (!record?.accessToken) {
     throw new Error("Store not connected");
   }
 
-  // Avoid creating duplicate subscriptions.
   const existing = await syncBillingFromShopify(shop);
   if (isPaidActive(existing)) {
-    throw new Error("Subscription is already active.");
+    throw new Error("Subscription is already active. Cancel first to switch plans.");
   }
 
-  const planName = process.env.BILLING_PLAN_NAME || "Auri Pro";
-  const amount = Number(process.env.BILLING_PRICE_USD || "19.0");
-  const trialDays = Number(process.env.BILLING_TRIAL_DAYS || "7");
+  const plan = getPlan(planKey);
+  if (plan.key === "free" || plan.monthlyPriceUsd <= 0) {
+    throw new Error("Cannot create a subscription for the free plan.");
+  }
+
   const test = process.env.BILLING_TEST === "1" || process.env.BILLING_TEST === "true";
+
+  const lineItems: Record<string, unknown>[] = [
+    {
+      plan: {
+        appRecurringPricingDetails: {
+          price: { amount: plan.monthlyPriceUsd, currencyCode: "USD" },
+        },
+      },
+    },
+  ];
+
+  if (plan.overagePriceCentsPerTicket > 0 && plan.cappedAmountUsd > 0) {
+    const overageUsd = plan.overagePriceCentsPerTicket / 100;
+    lineItems.push({
+      plan: {
+        appUsagePricingDetails: {
+          cappedAmount: { amount: plan.cappedAmountUsd, currencyCode: "USD" },
+          terms: `Overage beyond ${plan.includedTickets} included tickets at $${overageUsd.toFixed(2)}/ticket, capped at $${plan.cappedAmountUsd}/month.`,
+        },
+      },
+    });
+  }
 
   const mutation = `
     mutation CreateSub($name: String!, $returnUrl: URL!, $trialDays: Int, $test: Boolean, $lineItems: [AppSubscriptionLineItemInput!]!) {
       appSubscriptionCreate(name: $name, returnUrl: $returnUrl, trialDays: $trialDays, test: $test, lineItems: $lineItems) {
         confirmationUrl
-        appSubscription { id status name }
+        appSubscription {
+          id status name
+          lineItems {
+            id
+            plan { pricingDetails { __typename ... on AppUsagePricing { cappedAmount { amount } terms } } }
+          }
+        }
         userErrors { field message }
       }
     }
   `;
 
   const variables = {
-    name: planName,
+    name: `Auri ${plan.name}`,
     returnUrl,
-    trialDays: Number.isFinite(trialDays) && trialDays > 0 ? trialDays : null,
+    trialDays: plan.trialDays > 0 ? plan.trialDays : null,
     test: test ? true : null,
-    lineItems: [
-      {
-        plan: {
-          appRecurringPricingDetails: {
-            price: { amount, currencyCode: "USD" },
-          },
-        },
-      },
-    ],
+    lineItems,
   };
 
   const resp = await shopifyGraphql<{
     appSubscriptionCreate?: {
       confirmationUrl?: string;
-      appSubscription?: { id: string; status: string; name: string };
+      appSubscription?: {
+        id: string;
+        status: string;
+        name: string;
+        lineItems?: Array<{
+          id: string;
+          plan?: { pricingDetails?: { __typename?: string; cappedAmount?: { amount?: string } } };
+        }>;
+      };
       userErrors?: Array<{ field?: string[]; message: string }>;
     };
   }>(shop, record.accessToken, mutation, variables);
@@ -157,19 +232,86 @@ export async function createProSubscription(shop: string, returnUrl: string): Pr
     throw new Error("Missing confirmationUrl from Shopify");
   }
 
-  // Optimistically save state; a later sync will finalize status.
   const sub = resp.data?.appSubscriptionCreate?.appSubscription;
+  let usageLineItemId: string | undefined;
+  if (sub?.lineItems) {
+    for (const li of sub.lineItems) {
+      if (li.plan?.pricingDetails?.__typename === "AppUsagePricing") {
+        usageLineItemId = li.id;
+      }
+    }
+  }
+
   saveBilling({
     shop,
     status: mapStatus(sub?.status),
     subscriptionId: sub?.id,
+    planKey: plan.key,
     planName: sub?.name,
+    usageLineItemId,
+    cappedAmountUsd: plan.cappedAmountUsd || undefined,
     checkedAt: new Date().toISOString(),
     raw: resp,
   });
 
   return { confirmationUrl: url };
 }
+
+// --- Report overage usage to Shopify ---
+
+export async function reportUsageRecord(
+  shop: string,
+  ticketId: string,
+  overageIndex: number,
+): Promise<boolean> {
+  const billing = getBilling(shop);
+  if (!billing?.usageLineItemId || !isPaidActive(billing)) return false;
+
+  const plan = getEffectivePlan(billing);
+  if (plan.overagePriceCentsPerTicket <= 0) return false;
+
+  const record = getShop(shop);
+  if (!record?.accessToken) return false;
+
+  const overageUsd = plan.overagePriceCentsPerTicket / 100;
+
+  const mutation = `
+    mutation UsageRecord($subscriptionLineItemId: ID!, $price: MoneyInput!, $description: String!, $idempotencyKey: String!) {
+      appUsageRecordCreate(subscriptionLineItemId: $subscriptionLineItemId, price: $price, description: $description, idempotencyKey: $idempotencyKey) {
+        userErrors { field message }
+        appUsageRecord { id }
+      }
+    }
+  `;
+
+  const variables = {
+    subscriptionLineItemId: billing.usageLineItemId,
+    price: { amount: overageUsd, currencyCode: "USD" },
+    description: `Overage ticket #${overageIndex} (${ticketId})`,
+    idempotencyKey: `${shop}:${ticketId}`,
+  };
+
+  try {
+    const resp = await shopifyGraphql<{
+      appUsageRecordCreate?: {
+        userErrors?: Array<{ field?: string[]; message: string }>;
+        appUsageRecord?: { id: string };
+      };
+    }>(shop, record.accessToken, mutation, variables);
+
+    const errs = resp.data?.appUsageRecordCreate?.userErrors || [];
+    if (errs.length > 0) {
+      captureException(new Error(`Usage record error: ${errs.map((e) => e.message).join("; ")}`), { shop, route: "usage_record" });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    captureException(err, { shop, route: "usage_record" });
+    return false;
+  }
+}
+
+// --- Cancel subscription ---
 
 export async function cancelSubscription(shop: string, prorate = false): Promise<BillingState> {
   const record = getShop(shop);
@@ -209,4 +351,3 @@ export async function cancelSubscription(shop: string, prorate = false): Promise
 
   return await syncBillingFromShopify(shop);
 }
-

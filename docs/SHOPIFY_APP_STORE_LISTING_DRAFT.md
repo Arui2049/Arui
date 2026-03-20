@@ -60,7 +60,17 @@ Returns and exchanges
    - `customers/redact`
    - `shop/redact`
 
-## Pricing Note
+## Pricing
 
-Before submitting, ensure your listing pricing exactly matches in-app behavior.
-If you choose paid plans in listing, implement Shopify Billing API first.
+All plans are billed via Shopify Billing API (recurring + usage-based). Merchants approve charges in Shopify admin.
+
+| Plan | Price | Included | Overage | Cap |
+|------|-------|----------|---------|-----|
+| **Free** | $0/mo | 50 tickets | — (hard limit) | — |
+| **Starter** | $19/mo | 200 tickets | — (hard limit) | — |
+| **Growth** | $49/mo | 1,000 tickets | $0.06/ticket | $149/mo |
+| **Pro** | $99/mo | 3,000 tickets | $0.04/ticket | $249/mo |
+
+- All paid plans include a 14-day free trial.
+- Usage-based overage is tracked via `appUsageRecordCreate` with idempotency keys.
+- Set `BILLING_TEST=1` for test charges during development/review.

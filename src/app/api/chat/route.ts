@@ -1,6 +1,6 @@
-import { trackTicket, getUsageSummary } from "@/lib/billing/usage";
+import { trackTicket, isWithinLimit } from "@/lib/billing/usage";
 import { getShop, saveTicket, getSettings, type ShopSettings, getBilling } from "@/lib/store";
-import { billingStale, syncBillingFromShopify } from "@/lib/billing/shopify-billing";
+import { billingStale, syncBillingFromShopify, isPaidActive } from "@/lib/billing/shopify-billing";
 import { logEvent } from "@/lib/events";
 import { ShopifyClient } from "@/lib/shopify/client";
 import { isValidShopDomain, verifyWidgetToken } from "@/lib/crypto";
@@ -371,7 +371,7 @@ function buildMockSteps(messages: ChatMessage[]): MockStep[] {
       // 3b: User provided details (reason for return, or specs for exchange) → process
       const { matchedOrder, matchedItem, isExchange } = priorIntent;
       const returnId = `RET-${Date.now().toString(36).toUpperCase()}`;
-      trackTicket("demo-store");
+      trackTicket("demo-store", returnId);
 
       if (isExchange) {
         const exchangeDetails = extractExchangeDetails(input);
@@ -589,12 +589,13 @@ export async function POST(req: Request) {
   const shopSettings = liveShop ? getSettings(shopId) : undefined;
 
   if (liveShop) {
-    const usage = getUsageSummary(shopId);
-    if (usage.freeRemaining <= 0) {
+    if (!isWithinLimit(shopId)) {
       const cached = getBilling(shopId);
       const b = billingStale(cached, 30 * 60 * 1000) ? await syncBillingFromShopify(shopId) : cached;
-      const paid = !!b && (b.status === "active" || b.status === "trialing");
-      if (!paid) {
+      if (!isPaidActive(b)) {
+        return sseResponse(buildUsageLimitSSE());
+      }
+      if (!isWithinLimit(shopId)) {
         return sseResponse(buildUsageLimitSSE());
       }
     }
@@ -699,12 +700,12 @@ export async function POST(req: Request) {
           required: ["orderId", "orderName", "itemId", "itemTitle", "reason", "action"],
         }),
         execute: async (args: { orderId: number; orderName: string; itemId: number; itemTitle: string; reason: string; action: string; exchangeDetails?: string }) => {
-          trackTicket(shopId);
           const ticketType = args.action === "exchange" ? "exchange" as const : "return" as const;
           if (liveShop) {
             try {
               const result = await liveShop.client.createReturn(args.orderId, args.itemId, args.reason, args.exchangeDetails);
               const retId = `RET-${Date.now().toString(36).toUpperCase()}`;
+              trackTicket(shopId, retId);
               saveTicket({ id: retId, shop: shopId, customerEmail: customerEmailStr || "unknown", orderName: args.orderName, type: ticketType, status: result.success ? "resolved" : "pending", summary: `${args.action}: ${args.itemTitle} — ${args.reason}`, createdAt: new Date().toISOString() });
               logEvent({ name: "ticket_created", shop: shopId, props: { type: ticketType, status: result.success ? "resolved" : "pending", source: "shopify" } });
               if (result.success && shopSettings?.notifyOnReturn && shopSettings.notifyEmail) {
@@ -733,6 +734,7 @@ export async function POST(req: Request) {
             }
           }
           const returnId = `RET-${Date.now().toString(36).toUpperCase()}`;
+          trackTicket(shopId, returnId);
           saveTicket({ id: returnId, shop: shopId, customerEmail: "demo@example.com", orderName: args.orderName, type: ticketType, status: "resolved", summary: `${args.action}: ${args.itemTitle} — ${args.reason}`, createdAt: new Date().toISOString() });
           logEvent({ name: "ticket_created", shop: shopId, props: { type: ticketType, status: "resolved", source: "demo" } });
           return {

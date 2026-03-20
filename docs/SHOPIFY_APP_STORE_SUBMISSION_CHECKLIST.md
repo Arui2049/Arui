@@ -76,7 +76,11 @@ This checklist is tailored to the current production environment:
 - [ ] Short description (≤ 100 chars)
 - [ ] Full description with key outcomes
 - [ ] Optional product video URL
-- [ ] Pricing section consistent with in-app behavior
+- [ ] Pricing section consistent with in-app behavior:
+  - Free: $0/mo, 50 tickets (hard limit)
+  - Starter: $19/mo, 200 tickets (hard limit, 14-day trial)
+  - Growth: $49/mo, 1,000 tickets + $0.06/ticket overage capped at $149/mo (14-day trial)
+  - Pro: $99/mo, 3,000 tickets + $0.04/ticket overage capped at $249/mo (14-day trial)
 
 ## 8) Reviewer Notes
 
