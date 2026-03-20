@@ -90,7 +90,7 @@ export default function Home() {
               <div className="animate-slide-up stagger-3 mt-12 grid max-w-md grid-cols-3 gap-8 rounded-2xl border border-zinc-100 bg-zinc-50/50 px-6 py-5 backdrop-blur-sm mx-auto lg:mx-0">
                 <Stat value="<60s" label="Avg Resolution" />
                 <Stat value="0" label="Agents Needed" />
-                <Stat value="50" label="Free Tickets/mo" />
+                <Stat value="50+" label="Free Tickets/mo" />
               </div>
             </div>
 
@@ -230,37 +230,104 @@ export default function Home() {
 
       {/* Pricing */}
       <section className="py-20 sm:py-24">
-        <div className="mx-auto max-w-3xl px-6 text-center">
+        <div className="mx-auto max-w-6xl px-6 text-center">
           <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-violet-600">Pricing</div>
           <h2 className="mb-2 text-2xl font-bold text-zinc-900 sm:text-3xl">Start Free. Scale as You Grow.</h2>
-          <p className="mb-12 text-sm text-zinc-500">No credit card required. Pay only when you exceed the free tier.</p>
-          <div className="mx-auto max-w-sm">
-            <div className="relative rounded-2xl border border-zinc-200 bg-white p-8 shadow-lg transition-all hover:shadow-xl">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-1 text-[11px] font-semibold text-white shadow-sm">Most Popular</div>
-              <div className="mb-1 text-sm font-semibold text-violet-600">Starter</div>
-              <div className="mb-1 flex items-baseline justify-center gap-1">
-                <span className="text-5xl font-bold tracking-tight text-zinc-900">$0</span>
+          <p className="mb-12 text-sm text-zinc-500">No credit card required. 14-day free trial on all paid plans.</p>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Free */}
+            <div className="relative flex flex-col rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition-all hover:shadow-lg hover:-translate-y-1">
+              <div className="mb-1 text-sm font-semibold text-zinc-500">Free</div>
+              <div className="mb-1 flex items-baseline gap-1">
+                <span className="text-4xl font-bold tracking-tight text-zinc-900">$0</span>
                 <span className="text-zinc-400">/mo</span>
               </div>
-              <p className="mb-8 text-sm text-zinc-500">First 50 tickets free, then $0.15/ticket</p>
-              <div className="mb-8 space-y-3 text-left">
-                {["50 AI-resolved tickets/month", "Order lookup & tracking", "Returns & exchanges", "Shopify integration", "Usage dashboard", "Embeddable chat widget"].map((f) => (
-                  <div key={f} className="flex items-center gap-2.5 text-sm text-zinc-700">
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />{f}
+              <p className="mb-6 text-[13px] text-zinc-500">Perfect for trying Auri out</p>
+              <div className="mb-6 flex-1 space-y-2.5 text-left">
+                {["50 AI tickets/month", "Order lookup & tracking", "Returns & exchanges", "Shopify integration", "Embeddable chat widget"].map((f) => (
+                  <div key={f} className="flex items-center gap-2 text-[13px] text-zinc-600">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />{f}
                   </div>
                 ))}
               </div>
               <Link
                 href="/connect"
-                onClick={() => track("cta_click", { cta: "pricing_get_started_free", placement: "pricing" })}
-                className="block w-full rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 py-3.5 text-center text-sm font-semibold text-white shadow-sm shadow-violet-200 transition-all hover:shadow-lg hover:shadow-violet-300 hover:-translate-y-0.5"
+                onClick={() => track("cta_click", { cta: "pricing_free", placement: "pricing" })}
+                className="block w-full rounded-xl border border-zinc-200 bg-white py-3 text-center text-sm font-semibold text-zinc-700 transition-all hover:border-zinc-300 hover:bg-zinc-50"
               >
-                Get Started Free
+                Get Started
               </Link>
             </div>
-            <p className="mt-6 text-xs text-zinc-400">
-              <strong className="text-zinc-500">Pro plan coming soon:</strong> $89/mo for 1,000 tickets + white-label branding
-            </p>
+            {/* Starter */}
+            <div className="relative flex flex-col rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition-all hover:shadow-lg hover:-translate-y-1">
+              <div className="mb-1 text-sm font-semibold text-violet-600">Starter</div>
+              <div className="mb-1 flex items-baseline gap-1">
+                <span className="text-4xl font-bold tracking-tight text-zinc-900">$19</span>
+                <span className="text-zinc-400">/mo</span>
+              </div>
+              <p className="mb-6 text-[13px] text-zinc-500">For small stores getting started</p>
+              <div className="mb-6 flex-1 space-y-2.5 text-left">
+                {["200 AI tickets/month", "Everything in Free", "Usage dashboard", "14-day free trial"].map((f) => (
+                  <div key={f} className="flex items-center gap-2 text-[13px] text-zinc-600">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />{f}
+                  </div>
+                ))}
+              </div>
+              <Link
+                href="/connect"
+                onClick={() => track("cta_click", { cta: "pricing_starter", placement: "pricing" })}
+                className="block w-full rounded-xl border border-zinc-200 bg-white py-3 text-center text-sm font-semibold text-zinc-700 transition-all hover:border-zinc-300 hover:bg-zinc-50"
+              >
+                Start Free Trial
+              </Link>
+            </div>
+            {/* Growth — highlighted */}
+            <div className="relative flex flex-col rounded-2xl border-2 border-violet-400 bg-white p-6 shadow-lg shadow-violet-100/50 transition-all hover:shadow-xl hover:-translate-y-1">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-1 text-[11px] font-semibold text-white shadow-sm">Most Popular</div>
+              <div className="mb-1 text-sm font-semibold text-violet-600">Growth</div>
+              <div className="mb-1 flex items-baseline gap-1">
+                <span className="text-4xl font-bold tracking-tight text-zinc-900">$49</span>
+                <span className="text-zinc-400">/mo</span>
+              </div>
+              <p className="mb-6 text-[13px] text-zinc-500">For growing stores with volume</p>
+              <div className="mb-6 flex-1 space-y-2.5 text-left">
+                {["1,000 AI tickets/month", "Everything in Starter", "$0.06/extra ticket", "Overage capped at $149", "14-day free trial"].map((f) => (
+                  <div key={f} className="flex items-center gap-2 text-[13px] text-zinc-600">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />{f}
+                  </div>
+                ))}
+              </div>
+              <Link
+                href="/connect"
+                onClick={() => track("cta_click", { cta: "pricing_growth", placement: "pricing" })}
+                className="block w-full rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 py-3 text-center text-sm font-semibold text-white shadow-sm shadow-violet-200 transition-all hover:shadow-lg hover:shadow-violet-300 hover:-translate-y-0.5"
+              >
+                Start Free Trial
+              </Link>
+            </div>
+            {/* Pro */}
+            <div className="relative flex flex-col rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition-all hover:shadow-lg hover:-translate-y-1">
+              <div className="mb-1 text-sm font-semibold text-zinc-800">Pro</div>
+              <div className="mb-1 flex items-baseline gap-1">
+                <span className="text-4xl font-bold tracking-tight text-zinc-900">$99</span>
+                <span className="text-zinc-400">/mo</span>
+              </div>
+              <p className="mb-6 text-[13px] text-zinc-500">For high-volume stores</p>
+              <div className="mb-6 flex-1 space-y-2.5 text-left">
+                {["3,000 AI tickets/month", "Everything in Growth", "$0.04/extra ticket", "Overage capped at $249", "14-day free trial"].map((f) => (
+                  <div key={f} className="flex items-center gap-2 text-[13px] text-zinc-600">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />{f}
+                  </div>
+                ))}
+              </div>
+              <Link
+                href="/connect"
+                onClick={() => track("cta_click", { cta: "pricing_pro", placement: "pricing" })}
+                className="block w-full rounded-xl border border-zinc-900 bg-zinc-900 py-3 text-center text-sm font-semibold text-white transition-all hover:bg-zinc-800 hover:-translate-y-0.5"
+              >
+                Start Free Trial
+              </Link>
+            </div>
           </div>
         </div>
       </section>
