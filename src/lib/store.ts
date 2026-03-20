@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
 import lockfile from "proper-lockfile";
-import { encryptToken, decryptToken } from "./crypto";
+import { encryptToken, decryptToken, encryptPII, decryptPII } from "./crypto";
 
 const DATA_DIR = join(process.cwd(), ".data");
 
@@ -42,6 +42,16 @@ function withLock<T>(file: string, fn: () => T): T {
 interface ShopRecord { shop: string; accessToken: string; installedAt: string }
 interface StoredShopRecord { shop: string; accessTokenEncrypted: string; installedAt: string }
 interface UsageRecord { shop: string; month: string; ticketCount: number }
+export interface GdprRequestRecord {
+  id: string;
+  topic: string;
+  shop: string;
+  customerEmail?: string;
+  status: "processed" | "needs_manual_review";
+  details: string;
+  exportedData?: unknown;
+  createdAt: string;
+}
 
 export interface TicketRecord {
   id: string;
@@ -65,10 +75,39 @@ export interface ShopSettings {
   notifyEmail: string;
 }
 
+export interface BillingState {
+  shop: string;
+  status: "none" | "active" | "trialing" | "past_due" | "canceled" | "expired" | "frozen" | "unknown";
+  subscriptionId?: string;
+  planName?: string;
+  currentPeriodEnd?: string;
+  trialDays?: number;
+  checkedAt: string; // ISO timestamp
+  raw?: unknown;
+}
+
 const SHOPS = () => join(DATA_DIR, "shops.json");
 const USAGE = () => join(DATA_DIR, "usage.json");
 const TICKETS = () => join(DATA_DIR, "tickets.json");
 const SETTINGS = () => join(DATA_DIR, "settings.json");
+const GDPR_REQUESTS = () => join(DATA_DIR, "gdpr-requests.json");
+const ACCESS_LOG = () => join(DATA_DIR, "access.log");
+const BILLING = () => join(DATA_DIR, "billing.json");
+
+function logDataAccess(action: string, shop: string, detail?: string) {
+  try {
+    ensure();
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      action,
+      shop,
+      ...(detail ? { detail } : {}),
+    }) + "\n";
+    appendFileSync(ACCESS_LOG(), line);
+  } catch {
+    // Non-fatal: don't let logging break data operations
+  }
+}
 
 function hasEncryption(): boolean {
   return !!process.env.SESSION_SECRET;
@@ -151,18 +190,28 @@ export function removeUsage(shop: string) {
 
 // --- Ticket records ---
 
+function encryptTicket(ticket: TicketRecord): TicketRecord {
+  return { ...ticket, customerEmail: encryptPII(ticket.customerEmail) };
+}
+
+function decryptTicket(ticket: TicketRecord): TicketRecord {
+  return { ...ticket, customerEmail: decryptPII(ticket.customerEmail) };
+}
+
 export function saveTicket(ticket: TicketRecord) {
   withLock(TICKETS(), () => {
     const list = readJSON<TicketRecord[]>(TICKETS(), []);
-    list.unshift(ticket);
+    list.unshift(encryptTicket(ticket));
     if (list.length > 500) list.length = 500;
     writeJSON(TICKETS(), list);
   });
+  logDataAccess("ticket_create", ticket.shop);
 }
 
 export function getTickets(shop: string, limit = 50, offset = 0): TicketRecord[] {
+  logDataAccess("ticket_list", shop);
   const list = readJSON<TicketRecord[]>(TICKETS(), []);
-  return list.filter((t) => t.shop === shop).slice(offset, offset + limit);
+  return list.filter((t) => t.shop === shop).slice(offset, offset + limit).map(decryptTicket);
 }
 
 export function getTicketCount(shop: string): number {
@@ -203,7 +252,7 @@ export interface DailyCount { date: string; count: number }
 export interface TypeBreakdown { type: string; count: number }
 
 export function getTicketsByDay(shop: string, days = 14): DailyCount[] {
-  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop);
+  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop).map(decryptTicket);
   const now = new Date();
   const result: DailyCount[] = [];
 
@@ -218,7 +267,7 @@ export function getTicketsByDay(shop: string, days = 14): DailyCount[] {
 }
 
 export function getTicketTypeBreakdown(shop: string): TypeBreakdown[] {
-  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop);
+  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop).map(decryptTicket);
   const counts: Record<string, number> = {};
   for (const t of tickets) {
     counts[t.type] = (counts[t.type] || 0) + 1;
@@ -227,10 +276,93 @@ export function getTicketTypeBreakdown(shop: string): TypeBreakdown[] {
 }
 
 export function getResolvedRate(shop: string): number {
-  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop);
+  const tickets = readJSON<TicketRecord[]>(TICKETS(), []).filter((t) => t.shop === shop).map(decryptTicket);
   if (tickets.length === 0) return 100;
   const resolved = tickets.filter((t) => t.status === "resolved").length;
   return Math.round((resolved / tickets.length) * 100);
+}
+
+// --- GDPR helpers ---
+
+export function getTicketsByCustomerEmail(shop: string, email: string): TicketRecord[] {
+  logDataAccess("gdpr_data_export", shop, "customer_email_lookup");
+  const list = readJSON<TicketRecord[]>(TICKETS(), []);
+  const lower = email.toLowerCase();
+  return list
+    .map(decryptTicket)
+    .filter((t) => t.shop === shop && t.customerEmail.toLowerCase() === lower);
+}
+
+export function removeTicketsByCustomerEmail(shop: string, email: string) {
+  logDataAccess("gdpr_customer_redact", shop, "customer_email_delete");
+  withLock(TICKETS(), () => {
+    const list = readJSON<TicketRecord[]>(TICKETS(), []);
+    const lower = email.toLowerCase();
+    const filtered = list.filter(
+      (t) => !(t.shop === shop && decryptPII(t.customerEmail).toLowerCase() === lower),
+    );
+    writeJSON(TICKETS(), filtered);
+  });
+}
+
+export function removeAllShopData(shop: string) {
+  removeShop(shop);
+  removeUsage(shop);
+
+  withLock(TICKETS(), () => {
+    const list = readJSON<TicketRecord[]>(TICKETS(), []);
+    writeJSON(TICKETS(), list.filter((t) => t.shop !== shop));
+  });
+
+  withLock(SETTINGS(), () => {
+    const list = readJSON<ShopSettings[]>(SETTINGS(), []);
+    writeJSON(SETTINGS(), list.filter((s) => s.shop !== shop));
+  });
+
+  withLock(HEARTBEATS(), () => {
+    const list = readJSON<HeartbeatRecord[]>(HEARTBEATS(), []);
+    writeJSON(HEARTBEATS(), list.filter((h) => h.shop !== shop));
+  });
+
+  removeGdprRequestsByShop(shop);
+  removeBilling(shop);
+}
+
+export function recordGdprRequest(input: {
+  topic: string;
+  shop: string;
+  customerEmail?: string;
+  status: "processed" | "needs_manual_review";
+  details: string;
+  exportedData?: unknown;
+}) {
+  withLock(GDPR_REQUESTS(), () => {
+    const list = readJSON<GdprRequestRecord[]>(GDPR_REQUESTS(), []);
+    list.unshift({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      topic: input.topic,
+      shop: input.shop,
+      customerEmail: input.customerEmail,
+      status: input.status,
+      details: input.details,
+      exportedData: input.exportedData,
+      createdAt: new Date().toISOString(),
+    });
+    if (list.length > 1000) list.length = 1000;
+    writeJSON(GDPR_REQUESTS(), list);
+  });
+}
+
+export function getGdprRequests(shop: string): GdprRequestRecord[] {
+  return readJSON<GdprRequestRecord[]>(GDPR_REQUESTS(), [])
+    .filter((r) => r.shop === shop);
+}
+
+export function removeGdprRequestsByShop(shop: string) {
+  withLock(GDPR_REQUESTS(), () => {
+    const list = readJSON<GdprRequestRecord[]>(GDPR_REQUESTS(), []);
+    writeJSON(GDPR_REQUESTS(), list.filter((r) => r.shop !== shop));
+  });
 }
 
 // --- Widget heartbeat ---
@@ -252,4 +384,27 @@ export function getWidgetHeartbeat(shop: string): string | null {
   const list = readJSON<HeartbeatRecord[]>(HEARTBEATS(), []);
   const found = list.find((h) => h.shop === shop);
   return found?.lastPing || null;
+}
+
+// --- Billing state (Shopify Billing API sync cache) ---
+
+export function saveBilling(state: BillingState) {
+  withLock(BILLING(), () => {
+    const list = readJSON<BillingState[]>(BILLING(), []);
+    const i = list.findIndex((x) => x.shop === state.shop);
+    if (i >= 0) list[i] = state; else list.push(state);
+    writeJSON(BILLING(), list);
+  });
+}
+
+export function getBilling(shop: string): BillingState | null {
+  const list = readJSON<BillingState[]>(BILLING(), []);
+  return list.find((x) => x.shop === shop) || null;
+}
+
+export function removeBilling(shop: string) {
+  withLock(BILLING(), () => {
+    const list = readJSON<BillingState[]>(BILLING(), []);
+    writeJSON(BILLING(), list.filter((x) => x.shop !== shop));
+  });
 }

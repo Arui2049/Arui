@@ -77,6 +77,15 @@ async function hmacSHA256Edge(data: string, secret: string): Promise<string> {
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function timingSafeEqualEdge(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
 async function verifySessionEdge(cookie: string): Promise<string | null> {
   const secret = process.env.SESSION_SECRET;
   if (!secret) return null;
@@ -85,7 +94,7 @@ async function verifySessionEdge(cookie: string): Promise<string | null> {
   const shop = cookie.slice(0, idx);
   const sig = cookie.slice(idx + 1);
   const expected = await hmacSHA256Edge(shop, secret);
-  if (expected !== sig) return null;
+  if (!timingSafeEqualEdge(expected, sig)) return null;
   if (!SHOP_RE.test(shop) || shop.length > 100) return null;
   return shop;
 }
@@ -94,7 +103,7 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const attrib = pickAttribution(req);
 
-  const protectedPaths = ["/admin", "/api/admin"];
+  const protectedPaths = ["/admin", "/api/admin", "/api/billing"];
   const isProtected = protectedPaths.some((p) => pathname === p || pathname.startsWith(p + "/"));
   if (!isProtected) {
     const res = NextResponse.next();
@@ -133,5 +142,5 @@ function redirectToConnect(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/admin/:path*"],
+  matcher: ["/admin/:path*", "/api/admin/:path*", "/api/billing/:path*"],
 };

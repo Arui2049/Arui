@@ -10,12 +10,17 @@ import { StatusTracker } from "../widgets/StatusTracker";
 import { EscalationCard } from "../widgets/EscalationCard";
 import { track } from "@/lib/track-client";
 
-function ToolPartRenderer({ part }: { part: Record<string, unknown> }) {
+function ToolPartRenderer({ part, onQuickReply }: { part: Record<string, unknown>; onQuickReply?: (text: string) => void }) {
   const state = String(part.state || "");
   const data = (part.output || part.result) as Record<string, unknown> | undefined;
   const toolName = String(part.toolName || "");
 
-  if (!data || state === "call" || state === "partial-call" || state === "streaming") {
+  // AI SDK v6 states: "input-streaming", "input-available", "output-available", "output-error"
+  // Legacy AI SDK states: "call", "partial-call", "streaming"
+  const isLoading = !data ||
+    state === "call" || state === "partial-call" || state === "streaming" ||
+    state === "input-streaming" || state === "input-available";
+  if (isLoading) {
     const labels: Record<string, string> = {
       lookup_orders: "Looking up your orders",
       initiate_return: "Processing return request",
@@ -34,7 +39,11 @@ function ToolPartRenderer({ part }: { part: Record<string, unknown> }) {
   }
 
   if (toolName === "lookup_orders" && data.orders) {
-    return <div className="animate-slide-up"><OrderList orders={data.orders as never[]} /></div>;
+    return (
+      <div className="animate-slide-up">
+        <OrderList orders={data.orders as never[]} onSelect={onQuickReply} />
+      </div>
+    );
   }
   if (toolName === "initiate_return") {
     return <div className="animate-scale-in"><ReturnConfirmation data={data as never} /></div>;
@@ -141,7 +150,7 @@ function ChatInterfaceInner({ shop, customerEmail, widgetToken }: ChatInterfaceP
   };
 
   return (
-    <div className="flex h-full flex-col bg-white">
+      <div className="flex h-full flex-1 flex-col bg-white">
       {/* Header */}
       <div className="relative flex items-center gap-3 border-b border-zinc-200/50 bg-gradient-to-r from-violet-600 via-indigo-600 to-violet-700 px-4 py-3.5">
         <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIyMCIgY3k9IjIwIiByPSIxIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIi8+PC9zdmc+')] opacity-50" />
@@ -183,16 +192,23 @@ function ChatInterfaceInner({ shop, customerEmail, widgetToken }: ChatInterfaceP
                       </div>
                     );
                   }
+                  // Legacy generic types
                   if (ptype === "tool-call") {
                     const p = part as unknown as Record<string, unknown>;
                     const hasResult = msg.parts.some(
                       (other) => (other.type as string) === "tool-result" && (other as unknown as Record<string, unknown>).toolCallId === p.toolCallId,
                     );
                     if (hasResult) return null;
-                    return <ToolPartRenderer key={i} part={p} />;
+                    return <ToolPartRenderer key={i} part={p} onQuickReply={send} />;
                   }
                   if (ptype === "tool-result" || ptype === "dynamic-tool") {
-                    return <ToolPartRenderer key={i} part={part as unknown as Record<string, unknown>} />;
+                    return <ToolPartRenderer key={i} part={part as unknown as Record<string, unknown>} onQuickReply={send} />;
+                  }
+                  // AI SDK v6: static tool UI parts typed as `tool-${toolName}` (e.g. "tool-lookup_orders")
+                  if (ptype.startsWith("tool-")) {
+                    const toolName = ptype.slice("tool-".length);
+                    const normalized = { ...(part as unknown as Record<string, unknown>), toolName };
+                    return <ToolPartRenderer key={i} part={normalized} onQuickReply={send} />;
                   }
                   return null;
                 })}

@@ -58,7 +58,7 @@ export default function DemoPage() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col bg-gradient-to-b from-zinc-50 to-zinc-100">
+    <div className="flex h-dvh flex-col overflow-hidden bg-gradient-to-b from-zinc-50 to-zinc-100">
       {/* Header */}
       <div className="border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-lg items-center justify-between px-4 py-2.5">
@@ -95,8 +95,8 @@ export default function DemoPage() {
       </div>
 
       {/* Chat container */}
-      <div className="mx-auto flex w-full max-w-lg flex-1 flex-col px-4 py-5">
-        <div className="animate-scale-in flex-1 overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-2xl shadow-zinc-900/5">
+      <div className="mx-auto flex w-full max-w-lg flex-1 flex-col overflow-y-auto px-4 py-5">
+        <div className="animate-scale-in flex flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-2xl shadow-zinc-900/5">
           {mode === "live" && canLive ? (
             started ? (
               <ChatInterface shop={connectedShop} customerEmail={email.trim()} widgetToken={token} />
@@ -159,8 +159,8 @@ export default function DemoPage() {
           )}
         </div>
 
-        {/* Hints */}
-        <div className="animate-fade-in mt-4 space-y-3">
+        {/* Hints (hide on small screens to keep chat footer anchored) */}
+        <div className="hidden sm:block animate-fade-in mt-4 space-y-3">
           <div className="flex items-start gap-2.5 rounded-xl border border-zinc-200/80 bg-white p-3.5 shadow-sm">
             <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-100">
               <Sparkles className="h-3.5 w-3.5 text-violet-600" />

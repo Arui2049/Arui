@@ -7,6 +7,13 @@ import { ArrowLeft, Store, CheckCircle2, ExternalLink, ShieldCheck, Copy, Check,
 import { track } from "@/lib/track-client";
 import { getPublicAppUrl } from "@/lib/app-url";
 
+function buildThemeEditorUrl(shop: string) {
+  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
+  const handle = "auri-embed";
+  if (!apiKey) return `https://${shop}/admin/themes/current/editor?context=apps`;
+  return `https://${shop}/admin/themes/current/editor?context=apps&activateAppId=${encodeURIComponent(apiKey)}/${encodeURIComponent(handle)}`;
+}
+
 function EmbedCodeBlock({ shop }: { shop: string }) {
   const [copied, setCopied] = useState(false);
   const origin = getPublicAppUrl();
@@ -100,6 +107,7 @@ function ConnectPageContent() {
 
   if (session?.authenticated && session.shop) {
     const linkedShop = session.shop;
+    const themeEditorUrl = buildThemeEditorUrl(linkedShop);
     return (
       <div className="flex min-h-dvh items-center justify-center bg-gradient-to-b from-zinc-50 to-white p-4">
         <div className="w-full max-w-md space-y-4 animate-scale-in">
@@ -114,6 +122,24 @@ function ConnectPageContent() {
             </p>
 
             <div className="mb-6 text-left">
+              <div className="mb-3 rounded-xl border border-emerald-200/60 bg-emerald-50/60 p-4">
+                <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-emerald-800">
+                  <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
+                  Recommended install (no code)
+                </div>
+                <p className="text-[11px] text-emerald-700">
+                  Enable Auri from the theme editor → App embeds. This is the fastest and safest way to install.
+                </p>
+                <a
+                  href={themeEditorUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white transition-all hover:bg-emerald-700"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Open Theme Editor
+                </a>
+              </div>
               <EmbedCodeBlock shop={linkedShop} />
             </div>
 
@@ -144,9 +170,9 @@ function ConnectPageContent() {
               <h3 className="text-xs font-semibold text-violet-800">Quick Setup Guide</h3>
             </div>
             <ol className="space-y-1.5 text-xs text-violet-700">
-              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">1</span>Copy the embed code above</li>
-              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">2</span>Paste into your Shopify theme (Online Store → Themes → Edit Code)</li>
-              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">3</span>Your customers can now chat with Auri!</li>
+              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">1</span>Open theme editor → App embeds → enable Auri</li>
+              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">2</span>Visit your storefront and confirm the chat bubble appears</li>
+              <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-200/60 text-[10px] font-bold text-violet-700">3</span>If needed, use the embed code as a fallback</li>
             </ol>
           </div>
         </div>

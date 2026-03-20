@@ -14,12 +14,13 @@ interface SetupStep {
 
 interface SetupChecklistProps {
   storeConnected: boolean;
-  apiKeyConfigured: boolean;
   widgetInstalled: boolean;
   hasTestTicket: boolean;
+  themeEditorUrl?: string;
+  paidActive?: boolean;
 }
 
-export function SetupChecklist({ storeConnected, apiKeyConfigured, widgetInstalled, hasTestTicket }: SetupChecklistProps) {
+export function SetupChecklist({ storeConnected, widgetInstalled, hasTestTicket, themeEditorUrl, paidActive }: SetupChecklistProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
@@ -32,16 +33,15 @@ export function SetupChecklist({ storeConnected, apiKeyConfigured, widgetInstall
       action: storeConnected ? undefined : { label: "Connect", href: "/connect" },
     },
     {
-      id: "api-key",
-      label: "Configure OpenAI API Key",
-      description: "Add your OpenAI key in .env.local to enable AI-powered chat (runs in demo mode without it).",
-      completed: apiKeyConfigured,
-    },
-    {
       id: "widget",
-      label: "Install Widget in Your Theme",
-      description: "Copy the embed code and paste it into your Shopify theme before </body>.",
+      label: "Enable App Embed in Theme Editor",
+      description: "Turn on Auri in your theme (Theme editor → App embeds). No code changes needed.",
       completed: widgetInstalled,
+      action: widgetInstalled
+        ? undefined
+        : themeEditorUrl
+          ? { label: "Open Theme Editor", href: themeEditorUrl, external: true }
+          : { label: "View Guide", href: "#embed-code" },
     },
     {
       id: "test",
@@ -50,6 +50,13 @@ export function SetupChecklist({ storeConnected, apiKeyConfigured, widgetInstall
       completed: hasTestTicket,
       action: hasTestTicket ? undefined : { label: "Try Demo", href: "/demo" },
     },
+    ...(!storeConnected || paidActive ? [] : [{
+      id: "plan",
+      label: "Choose a Plan",
+      description: "Start a trial to remove the 50 ticket/month limit and keep the widget running.",
+      completed: false,
+      action: { label: "Upgrade", href: "#billing" },
+    }] as SetupStep[]),
   ];
 
   const completedCount = steps.filter((s) => s.completed).length;

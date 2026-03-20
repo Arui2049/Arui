@@ -12,7 +12,32 @@ import { getPublicAppUrl } from "@/lib/app-url";
 
 interface DailyCount { date: string; count: number }
 interface TypeBreakdown { type: string; count: number }
-interface Usage { shop: string; month: string; ticketCount: number; freeRemaining: number; overageCount: number; overageCostDisplay: string; hasTestTicket?: boolean; widgetInstalled?: boolean; dailyCounts?: DailyCount[]; typeBreakdown?: TypeBreakdown[]; resolvedRate?: number }
+interface BillingState {
+  shop: string;
+  status: string;
+  subscriptionId?: string;
+  planName?: string;
+  currentPeriodEnd?: string;
+  trialDays?: number;
+  checkedAt: string;
+}
+
+interface Usage {
+  shop: string;
+  month: string;
+  ticketCount: number;
+  freeRemaining: number;
+  overageCount: number;
+  overageCostDisplay: string;
+  hasTestTicket?: boolean;
+  widgetInstalled?: boolean;
+  dailyCounts?: DailyCount[];
+  typeBreakdown?: TypeBreakdown[];
+  resolvedRate?: number;
+  billing?: BillingState | null;
+  paidActive?: boolean;
+  themeEditorUrl?: string;
+}
 interface EventDay { date: string; count: number }
 interface TopSource { source: string; count: number }
 interface Acquisition {
@@ -95,6 +120,8 @@ export default function AdminPage() {
   const [review, setReview] = useState<ReviewStatus | null>(null);
   const [hideReview, setHideReview] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingMsg, setBillingMsg] = useState<string>("");
   const reviewShownOnce = useRef(false);
 
   useEffect(() => {
@@ -137,7 +164,7 @@ export default function AdminPage() {
   };
 
   const pct = u ? Math.min(100, (u.ticketCount / 50) * 100) : 0;
-  const limitReached = u ? u.freeRemaining <= 0 : false;
+  const limitReached = u ? (u.freeRemaining <= 0 && !u.paidActive) : false;
   const nearLimit = u ? u.freeRemaining > 0 && u.freeRemaining <= 10 : false;
   const pv14 = acq?.pageViews14d?.reduce((s, d) => s + d.count, 0) ?? 0;
   const cs14 = acq?.connectStarts14d?.reduce((s, d) => s + d.count, 0) ?? 0;
@@ -194,6 +221,8 @@ export default function AdminPage() {
             storeConnected={!!u.shop}
             widgetInstalled={!!u.widgetInstalled}
             hasTestTicket={!!u.hasTestTicket}
+            themeEditorUrl={u.themeEditorUrl}
+            paidActive={!!u.paidActive}
           />
         )}
 
@@ -239,7 +268,27 @@ export default function AdminPage() {
               <div className="text-sm font-semibold text-red-800">Free tier limit reached</div>
               <p className="text-xs text-red-600">Your 50 free tickets have been used. Upgrade to continue serving customers.</p>
             </div>
-            <a href="mailto:support@imauri.com?subject=Auri%20Upgrade%20Request" className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-red-700 hover:shadow-md">Contact to Upgrade</a>
+            <button
+              type="button"
+              disabled={billingBusy}
+              onClick={async () => {
+                setBillingBusy(true);
+                try {
+                  const r = await fetch("/api/billing/subscribe", { method: "POST" });
+                  const data = await r.json().catch(() => ({}));
+                  if (r.ok && data.confirmationUrl) {
+                    window.location.href = String(data.confirmationUrl);
+                    return;
+                  }
+                  alert(String(data.error || "Failed to start billing flow"));
+                } finally {
+                  setBillingBusy(false);
+                }
+              }}
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-red-700 hover:shadow-md disabled:opacity-60"
+            >
+              {billingBusy ? "Starting..." : "Upgrade"}
+            </button>
           </div>
         )}
         {nearLimit && !limitReached && (
@@ -322,11 +371,11 @@ export default function AdminPage() {
               </div>
 
               <div className="rounded-xl border border-zinc-200/60 bg-zinc-50/50 p-4">
-                <div className="mb-2 text-xs font-semibold text-zinc-700">自动优化建议</div>
+                <div className="mb-2 text-xs font-semibold text-zinc-700">Optimization suggestions</div>
                 <ul className="space-y-1 text-[11px] text-zinc-500">
-                  <li>- PV 低：上程序化 SEO 页面 + sitemap。</li>
-                  <li>- PV 高但 Start 低：CTA 更明确，减少跳转与文案摩擦。</li>
-                  <li>- Start 高但 Success 低：优化 OAuth 信任与权限说明。</li>
+                  <li>- Low PV: add programmatic SEO pages + sitemap.</li>
+                  <li>- High PV, low Starts: clarify CTA and reduce friction.</li>
+                  <li>- High Starts, low Success: improve OAuth trust + permissions copy.</li>
                 </ul>
               </div>
             </div>
@@ -344,7 +393,7 @@ export default function AdminPage() {
           )}
 
           {/* Store connection */}
-          <div className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm">
+          <div id="billing" className="rounded-2xl border border-zinc-200/60 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100"><Store className="h-4 w-4 text-emerald-600" /></div>
               <h2 className="text-sm font-semibold text-zinc-900">Store Connection</h2>
@@ -367,10 +416,76 @@ export default function AdminPage() {
             <div className="mt-4 rounded-xl bg-gradient-to-br from-violet-50 to-indigo-50/50 p-4">
               <h3 className="mb-2 text-xs font-semibold text-violet-800">Plan Details</h3>
               <div className="space-y-1.5 text-[11px] text-violet-700">
-                <div className="flex justify-between"><span>Free tier</span><span className="font-semibold">50 tickets/mo</span></div>
-                <div className="flex justify-between"><span>Overage rate</span><span className="font-semibold">$0.15/ticket</span></div>
-                <div className="flex justify-between"><span>Pro plan</span><span className="font-medium text-violet-500">Coming soon</span></div>
+                <div className="flex justify-between"><span>Current status</span><span className="font-semibold">{u?.paidActive ? (u.billing?.planName || "Pro") : "Free"}</span></div>
+                <div className="flex justify-between"><span>Limit</span><span className="font-semibold">{u?.paidActive ? "Unlimited" : "50 tickets/mo"}</span></div>
+                <div className="flex justify-between"><span>Billing</span><span className="font-semibold">{u?.paidActive ? "Active" : "Trial available"}</span></div>
+                {u?.billing?.currentPeriodEnd && (
+                  <div className="flex justify-between"><span>Renews</span><span className="font-semibold">{new Date(u.billing.currentPeriodEnd).toLocaleDateString()}</span></div>
+                )}
               </div>
+              {billingMsg && <div className="mt-2 text-[11px] text-violet-700/80">{billingMsg}</div>}
+              {!u?.paidActive && (
+                <button
+                  type="button"
+                  disabled={billingBusy}
+                  onClick={async () => {
+                    setBillingBusy(true);
+                    setBillingMsg("");
+                    try {
+                      const r = await fetch("/api/billing/subscribe", { method: "POST" });
+                      const data = await r.json().catch(() => ({}));
+                      if (r.ok && data.confirmationUrl) {
+                        window.location.href = String(data.confirmationUrl);
+                        return;
+                      }
+                      setBillingMsg(String(data.error || "Failed to start billing flow"));
+                    } finally {
+                      setBillingBusy(false);
+                    }
+                  }}
+                  className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition-all hover:bg-violet-700 disabled:opacity-60"
+                >
+                  {billingBusy ? "Starting..." : "Upgrade to Pro"}
+                </button>
+              )}
+              {u?.paidActive && (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <a
+                    href={`https://${u.shop}/admin/settings/billing`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-lg border border-violet-200 bg-white px-3 py-2 text-center text-[11px] font-semibold text-violet-700 transition-all hover:bg-violet-50"
+                  >
+                    Manage in Shopify
+                  </a>
+                  <button
+                    type="button"
+                    disabled={billingBusy}
+                    onClick={async () => {
+                      if (!confirm("Cancel your Pro plan? This will stop future billing cycles.")) return;
+                      setBillingBusy(true);
+                      setBillingMsg("");
+                      try {
+                        const r = await fetch("/api/billing/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prorate: false }) });
+                        const data = await r.json().catch(() => ({}));
+                        if (!r.ok) {
+                          setBillingMsg(String(data.error || "Failed to cancel"));
+                          return;
+                        }
+                        // Refresh dashboard state
+                        const u2 = await fetch("/api/admin/usage").then((x) => x.ok ? x.json() : null).catch(() => null);
+                        if (u2) setU(u2);
+                        setBillingMsg("Canceled. Changes may take a moment to reflect.");
+                      } finally {
+                        setBillingBusy(false);
+                      }
+                    }}
+                    className="rounded-lg border border-red-200 bg-white px-3 py-2 text-[11px] font-semibold text-red-700 transition-all hover:bg-red-50 disabled:opacity-60"
+                  >
+                    {billingBusy ? "Working..." : "Cancel plan"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import type { ShopifyOrder, OrderForDisplay, TrackingEvent } from "./types";
 
-const API_VERSION = "2024-10";
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
 
 export interface ShopifyApiError {
   status: number;

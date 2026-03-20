@@ -1,33 +1,33 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, BookOpen, Copy, FileCode2, Paintbrush, Eye, Save } from "lucide-react";
+import { ChevronDown, ChevronRight, BookOpen, ExternalLink, ToggleLeft, Eye, Save, Code } from "lucide-react";
 
 const STEPS = [
   {
-    icon: Copy,
-    title: "Copy the embed code",
-    content: "Click the \"Copy\" button above to copy the widget embed script to your clipboard.",
+    icon: ExternalLink,
+    title: "Open theme editor",
+    content: "In Shopify Admin: Online Store → Themes → Customize.",
   },
   {
-    icon: FileCode2,
-    title: "Open your Shopify theme editor",
-    content: "Go to your Shopify Admin → Online Store → Themes → click \"...\" on your current theme → Edit code.",
-  },
-  {
-    icon: Paintbrush,
-    title: "Find theme.liquid",
-    content: "In the left sidebar under \"Layout\", click on theme.liquid. Scroll to the bottom of the file and find the </body> tag.",
-  },
-  {
-    icon: Eye,
-    title: "Paste the embed code",
-    content: "Paste the copied script tag just before the </body> closing tag. The widget will appear as a floating chat button on your storefront.",
+    icon: ToggleLeft,
+    title: "Enable the Auri app embed",
+    content: "In the theme editor sidebar: Theme settings → App embeds → enable “Auri chat widget”, then click Save.",
   },
   {
     icon: Save,
-    title: "Save and preview",
-    content: "Click \"Save\" in the top right corner, then visit your store to see the Auri chat widget in the bottom-right corner.",
+    title: "Save changes",
+    content: "Click Save in the top right corner. The widget should now load across your storefront pages.",
+  },
+  {
+    icon: Eye,
+    title: "Preview on storefront",
+    content: "Visit your storefront and confirm the chat bubble appears in the bottom-right corner.",
+  },
+  {
+    icon: Code,
+    title: "Fallback: manual embed code",
+    content: "If you can’t use App embeds (rare), you can paste the embed code before </body> in theme.liquid. The Dashboard shows the exact script tag to copy.",
   },
 ];
 

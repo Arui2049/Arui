@@ -1,0 +1,24 @@
+name = "Auri"
+client_id = "81ba5bb5810f3b8de52645702b53cf6b"
+application_url = "https://app.imauri.com"
+embedded = false
+
+[access_scopes]
+scopes = "read_orders,write_returns"
+use_legacy_install_flow = true
+
+[auth]
+redirect_urls = [
+  "https://app.imauri.com/api/shopify/oauth/callback",
+]
+
+[webhooks]
+api_version = "2026-01"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "https://app.imauri.com/api/shopify/webhooks"
+
+[build]
+automatically_update_urls_on_dev = false

@@ -7,6 +7,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
+function getShopifyApiVersion(): string {
+  return process.env.SHOPIFY_API_VERSION || "2026-01";
+}
+
 function safeJsonCookie(raw: string | undefined): Record<string, unknown> | undefined {
   if (!raw) return undefined;
   try {
@@ -93,32 +97,51 @@ export async function GET(req: NextRequest) {
       props: { oauth: true },
     });
 
-    // Register uninstall webhook (non-fatal)
+    // Register required webhooks (non-fatal)
     try {
-      const webhookData = JSON.stringify({
-        webhook: {
-          topic: "app/uninstalled",
-          address: `${appUrl}/api/shopify/webhooks`,
-          format: "json",
-        },
-      });
-      await new Promise<void>((resolve) => {
-        const wreq = https.request({
-          hostname: shop,
-          path: "/admin/api/2026-01/webhooks.json",
-          method: "POST",
-          headers: {
-            "X-Shopify-Access-Token": access_token,
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(webhookData),
+      const registerWebhook = async (topic: string) => {
+        const webhookData = JSON.stringify({
+          webhook: {
+            topic,
+            address: `${appUrl}/api/shopify/webhooks`,
+            format: "json",
           },
-        }, () => resolve());
-        wreq.on("error", () => resolve());
-        wreq.write(webhookData);
-        wreq.end();
-      });
-    } catch {
-      // Non-fatal
+        });
+        await new Promise<void>((resolve) => {
+          const wreq = https.request({
+            hostname: shop,
+            path: `/admin/api/${getShopifyApiVersion()}/webhooks.json`,
+            method: "POST",
+            headers: {
+              "X-Shopify-Access-Token": access_token,
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(webhookData),
+            },
+          }, (res) => {
+            let body = "";
+            res.on("data", (chunk: string) => (body += chunk));
+            res.on("end", () => {
+              if (res.statusCode && res.statusCode >= 400) {
+                console.error(`[Webhook] Failed to register "${topic}" for ${shop}: ${res.statusCode} ${body}`);
+              }
+              resolve();
+            });
+          });
+          wreq.on("error", (err) => {
+            console.error(`[Webhook] Network error registering "${topic}" for ${shop}:`, err.message);
+            resolve();
+          });
+          wreq.write(webhookData);
+          wreq.end();
+        });
+      };
+
+      await registerWebhook("app/uninstalled");
+      await registerWebhook("customers/data_request");
+      await registerWebhook("customers/redact");
+      await registerWebhook("shop/redact");
+    } catch (err) {
+      console.error("[Webhook] Unexpected error during webhook registration:", err);
     }
 
     const response = NextResponse.redirect(`${appUrl}/admin`);

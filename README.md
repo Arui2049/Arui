@@ -72,8 +72,15 @@ Auri stores data in local JSON files (`.data/` directory). This means:
 1. Create a new app in [Shopify Partners](https://partners.shopify.com/)
 2. Set the App URL to your deployed domain
 3. Set the Allowed Redirection URL to `{APP_URL}/api/shopify/oauth/callback`
-4. Copy the Client ID and Client Secret to your `.env.local`
-5. Install the app on a development store via `{APP_URL}/connect`
+4. Set all GDPR mandatory webhook URLs to `{APP_URL}/api/shopify/webhooks`
+5. Required scopes: `read_orders,write_returns`
+6. Keep Embedded App disabled unless App Bridge/session token flow is implemented
+7. Copy the Client ID and Client Secret to your `.env.local`
+8. Install the app on a development store via `{APP_URL}/connect`
+
+For App Store submission assets/checklist, see:
+- `docs/SHOPIFY_APP_STORE_SUBMISSION_CHECKLIST.md`
+- `docs/SHOPIFY_APP_STORE_LISTING_DRAFT.md`
 
 ## Project Structure
 
@@ -102,6 +109,12 @@ src/
     store.ts         — JSON file-based data persistence
     session.ts       — Cookie session helpers
 ```
+
+## Theme App Extension (recommended install)
+
+Auri includes a Theme App Extension under `extensions/auri-theme/` with an App Embed block handle `auri-embed`.
+Merchants can enable it in:
+Online Store → Themes → Customize → App embeds → **Auri chat widget**.
 
 ## License
 

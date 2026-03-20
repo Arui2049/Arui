@@ -1,5 +1,6 @@
 import { trackTicket, getUsageSummary } from "@/lib/billing/usage";
-import { getShop, saveTicket, getSettings, type ShopSettings } from "@/lib/store";
+import { getShop, saveTicket, getSettings, type ShopSettings, getBilling } from "@/lib/store";
+import { billingStale, syncBillingFromShopify } from "@/lib/billing/shopify-billing";
 import { logEvent } from "@/lib/events";
 import { ShopifyClient } from "@/lib/shopify/client";
 import { isValidShopDomain, verifyWidgetToken } from "@/lib/crypto";
@@ -9,20 +10,29 @@ import type { OrderForDisplay } from "@/lib/shopify/types";
 
 export const maxDuration = 30;
 
-// --- In-memory rate limiter (sliding window, per-IP) ---
+// --- In-memory rate limiter (sliding window) ---
 
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 10;
 const rateBuckets = new Map<string, number[]>();
 
-function checkRateLimit(req: Request): boolean {
+function getClientIp(req: Request): string {
   const forwarded = req.headers.get("x-forwarded-for");
-  const ip = forwarded?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
+  return forwarded?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
+}
+
+function rateKey(req: Request, shop?: string): string {
+  const ip = getClientIp(req);
+  return shop ? `${shop}|${ip}` : ip;
+}
+
+function checkRateLimit(req: Request, shop?: string): boolean {
+  const key = rateKey(req, shop);
   const now = Date.now();
-  let timestamps = rateBuckets.get(ip);
+  let timestamps = rateBuckets.get(key);
   if (!timestamps) {
     timestamps = [];
-    rateBuckets.set(ip, timestamps);
+    rateBuckets.set(key, timestamps);
   }
   // Evict old entries
   while (timestamps.length > 0 && timestamps[0] < now - RATE_WINDOW_MS) {
@@ -165,6 +175,10 @@ ${policyLines.length > 0 ? policyLines.join("\n") + "\n" : ""}RULES:
 - ${emailLine}
 - When a customer mentions any order issue, IMMEDIATELY call lookup_orders.
 - After showing orders, ask which item they need help with.
+- For exchanges, proactively help the customer choose the right replacement (size/color) before calling initiate_return:
+  - If the issue is size/fit: ask if it runs small or large; suggest one size up/down and ask for confirmation (e.g., "Size 10").
+  - If the issue is color/style: ask their preferred color/style and confirm the exact replacement.
+  - If the customer is unsure: offer a return instead and explain next steps briefly.
 - For returns/exchanges, call initiate_return with all required info.
 - For tracking, call track_shipment with the order id.
 - NEVER fabricate order data. Only use data from tool results.
@@ -208,7 +222,13 @@ function getLastUserText(messages: ChatMessage[]): string {
 
 function hasPriorToolCall(messages: ChatMessage[], name: string): boolean {
   return messages.some(
-    (m) => m.role === "assistant" && m.parts?.some((p) => (p as Record<string, unknown>).toolName === name),
+    (m) => m.role === "assistant" && m.parts?.some((p) => {
+      const pr = p as Record<string, unknown>;
+      // AI SDK v6: type is "tool-lookup_orders", toolName may or may not exist
+      if (pr.toolName === name) return true;
+      if (typeof pr.type === "string" && pr.type === `tool-${name}`) return true;
+      return false;
+    }),
   );
 }
 
@@ -219,10 +239,90 @@ interface MockStep {
   text?: string;
 }
 
+/**
+ * Look through previous user messages (excluding the latest) to find an earlier
+ * return/exchange intent, so we know we're now in the "provide details" step.
+ */
+function findPriorReturnIntent(messages: ChatMessage[]): {
+  matchedOrder: OrderForDisplay;
+  matchedItem: OrderForDisplay["items"][0];
+  isExchange: boolean;
+} | null {
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "user") continue;
+    const parts = msg.parts;
+    let text = "";
+    if (parts) {
+      const tp = parts.find((p) => p.type === "text" && p.text);
+      if (tp) text = tp.text!;
+    } else if (msg.content) {
+      text = msg.content;
+    }
+    if (!text) continue;
+    const t = text.toLowerCase();
+
+    const isReturn = t.includes("i want to return") || t.includes("退");
+    const isExchange = t.includes("i want to exchange") || t.includes("换");
+    if (!isReturn && !isExchange) continue;
+
+    const matched = matchItemFromInput(t);
+    return { ...matched, isExchange };
+  }
+  return null;
+}
+
+function extractReturnReason(input: string): { key: string; label: string } {
+  if (input.includes("defective") || input.includes("damaged") || input.includes("broken") || input.includes("坏") || input.includes("质量"))
+    return { key: "defective", label: "Defective or damaged" };
+  if (input.includes("wrong item") || input.includes("wrong product") || input.includes("not what") || input.includes("错"))
+    return { key: "wrong_item", label: "Received wrong item" };
+  if (input.includes("fit") || input.includes("small") || input.includes("big") || input.includes("large") || input.includes("tight") || input.includes("loose") || input.includes("尺码") || input.includes("大了") || input.includes("小了"))
+    return { key: "wrong_size", label: "Doesn't fit" };
+  if (input.includes("not as described") || input.includes("不符") || input.includes("描述"))
+    return { key: "not_as_described", label: "Not as described" };
+  return { key: "changed_mind", label: "Changed mind" };
+}
+
+function extractExchangeDetails(input: string): string {
+  const parts: string[] = [];
+  const sizeMatch = input.match(/size\s*(\d+|xs|s|m|l|xl|xxl)/i);
+  if (sizeMatch) parts.push(`Size ${sizeMatch[1].toUpperCase()}`);
+
+  const colorWords = ["black", "white", "red", "blue", "green", "navy", "gray", "grey", "brown", "pink", "beige", "cream"];
+  for (const c of colorWords) {
+    if (input.includes(c)) { parts.push(c.charAt(0).toUpperCase() + c.slice(1)); break; }
+  }
+
+  if (parts.length > 0) return parts.join(", ");
+  const trimmed = input.trim();
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function matchItemFromInput(input: string): { matchedOrder: OrderForDisplay; matchedItem: OrderForDisplay["items"][0] } {
+  // Priority 1: match by specific item title
+  for (const order of DEMO_ORDERS) {
+    for (const item of order.items) {
+      if (input.includes(item.title.toLowerCase())) {
+        return { matchedOrder: order, matchedItem: item };
+      }
+    }
+  }
+  // Priority 2: match by order name — return first item in that order
+  for (const order of DEMO_ORDERS) {
+    if (input.includes(order.name.toLowerCase())) {
+      return { matchedOrder: order, matchedItem: order.items[0] };
+    }
+  }
+  return { matchedOrder: DEMO_ORDERS[0], matchedItem: DEMO_ORDERS[0].items[0] };
+}
+
 function buildMockSteps(messages: ChatMessage[]): MockStep[] {
   const input = getLastUserText(messages);
   const hasOrders = hasPriorToolCall(messages, "lookup_orders");
+  const hasReturn = hasPriorToolCall(messages, "initiate_return");
 
+  // ── Step 1: Order lookup ──
   if (!hasOrders && (input.includes("order") || input.includes("return") || input.includes("track") || input.includes("package") || input.includes("查") || input.includes("退") || input.includes("换") || input.includes("物流"))) {
     return [
       {
@@ -230,40 +330,11 @@ function buildMockSteps(messages: ChatMessage[]): MockStep[] {
         toolArgs: { email: "demo@example.com" },
         toolResult: { orders: DEMO_ORDERS, source: "demo" },
       },
-      { text: "I found 3 orders on your account. Which one do you need help with?" },
+      { text: "I found 3 orders on your account. Which item would you like to return or exchange?" },
     ];
   }
 
-  if (hasOrders && (input.includes("return") || input.includes("退") || input.includes("换") || input.includes("size") || input.includes("exchange") || input.includes("sneaker") || input.includes("shoe") || input.includes("#1001") || input.includes("1001"))) {
-    trackTicket("demo-store");
-    const returnId = `RET-${Date.now().toString(36).toUpperCase()}`;
-    saveTicket({ id: returnId, shop: "demo-store", customerEmail: "demo@example.com", orderName: "#1001", type: "return", status: "resolved", summary: "Exchange request: Classic Runner Sneakers — wrong size", createdAt: new Date().toISOString() });
-    logEvent({ name: "ticket_created", shop: "demo-store", props: { type: "return", status: "resolved", source: "demo" } });
-    return [
-      {
-        toolName: "initiate_return",
-        toolArgs: { orderId: 100001, orderName: "#1001", itemId: 200001, itemTitle: "Classic Runner Sneakers", reason: "wrong_size", action: "exchange", exchangeDetails: "Size 10" },
-        toolResult: {
-          success: true,
-          returnId,
-          orderName: "#1001",
-          itemTitle: "Classic Runner Sneakers",
-          action: "exchange",
-          reason: "wrong_size",
-          exchangeDetails: "Size 10",
-          instructions: {
-            step1: "Pack the item in its original packaging",
-            step2: "Print the return label (sent to your email)",
-            step3: "Drop off at any UPS location",
-            deadline: "Please ship within 14 days",
-          },
-          labelUrl: `https://example.com/label/${returnId}`,
-        },
-      },
-      { text: "Your exchange has been created! Pack the sneakers in their original box and drop them at any UPS location within 14 days. Your new Size 10 pair will ship once we receive the return." },
-    ];
-  }
-
+  // ── Step 2: Tracking ──
   if (hasOrders && (input.includes("track") || input.includes("物流") || input.includes("where") || input.includes("package") || input.includes("shipping") || input.includes("包裹"))) {
     const order = DEMO_ORDERS[0];
     return [
@@ -274,6 +345,98 @@ function buildMockSteps(messages: ChatMessage[]): MockStep[] {
       },
       { text: "Your package is currently out for delivery in Dallas, TX via UPS. It should arrive today!" },
     ];
+  }
+
+  // ── Step 3: Return / Exchange — multi-turn flow ──
+  if (hasOrders && !hasReturn) {
+    const priorIntent = findPriorReturnIntent(messages);
+
+    if (!priorIntent) {
+      // 3a: User just selected an item (clicked button or typed) → ask for details
+      const isReturnRelated = input.includes("return") || input.includes("退") || input.includes("exchange") || input.includes("换") ||
+        DEMO_ORDERS.some(o => o.items.some(it => input.includes(it.title.toLowerCase())) || input.includes(o.name.toLowerCase()));
+
+      if (isReturnRelated) {
+        const { matchedItem } = matchItemFromInput(input);
+        const isExchange = input.includes("exchange") || input.includes("换") || input.includes("different size") || input.includes("different color") || input.includes("swap");
+
+        if (isExchange) {
+          return [{ text: `Sure, I'd love to help you exchange the ${matchedItem.title}! What would you like instead?\n\n• A different size (e.g. Size 8, 10, 11)\n• A different color\n\nJust let me know what you'd prefer.` }];
+        }
+        return [{ text: `Sure, I can help you return the ${matchedItem.title}. Could you let me know the reason?\n\n• Changed my mind\n• Doesn't fit / Wrong size\n• Item is defective or damaged\n• Received the wrong item` }];
+      }
+    }
+
+    if (priorIntent) {
+      // 3b: User provided details (reason for return, or specs for exchange) → process
+      const { matchedOrder, matchedItem, isExchange } = priorIntent;
+      const returnId = `RET-${Date.now().toString(36).toUpperCase()}`;
+      trackTicket("demo-store");
+
+      if (isExchange) {
+        const exchangeDetails = extractExchangeDetails(input);
+        const action = "exchange" as const;
+        saveTicket({ id: returnId, shop: "demo-store", customerEmail: "demo@example.com", orderName: matchedOrder.name, type: action, status: "resolved", summary: `Exchange: ${matchedItem.title} → ${exchangeDetails}`, createdAt: new Date().toISOString() });
+        logEvent({ name: "ticket_created", shop: "demo-store", props: { type: action, status: "resolved", source: "demo" } });
+
+        return [
+          {
+            toolName: "initiate_return",
+            toolArgs: { orderId: matchedOrder.id, orderName: matchedOrder.name, itemId: matchedItem.id, itemTitle: matchedItem.title, reason: "wrong_size", action, exchangeDetails },
+            toolResult: {
+              success: true,
+              returnId,
+              orderName: matchedOrder.name,
+              itemTitle: matchedItem.title,
+              action,
+              reason: "wrong_size",
+              exchangeDetails,
+              instructions: {
+                step1: "Pack the original item in its packaging",
+                step2: "Print the prepaid return label (sent to your email)",
+                step3: `Drop off at any UPS location — your ${exchangeDetails} replacement ships as soon as we receive this one`,
+                deadline: "Please ship within 14 days",
+              },
+              labelUrl: `https://example.com/label/${returnId}`,
+            },
+          },
+          { text: `Great choice! Your exchange has been created — we'll send the ${exchangeDetails} replacement for your ${matchedItem.title} as soon as we receive the original. Just pack it up and drop it at any UPS location within 14 days.` },
+        ];
+      }
+
+      const { key: reasonKey, label: reasonLabel } = extractReturnReason(input);
+      const action = "return" as const;
+      saveTicket({ id: returnId, shop: "demo-store", customerEmail: "demo@example.com", orderName: matchedOrder.name, type: action, status: "resolved", summary: `Return: ${matchedItem.title} — ${reasonLabel}`, createdAt: new Date().toISOString() });
+      logEvent({ name: "ticket_created", shop: "demo-store", props: { type: action, status: "resolved", source: "demo" } });
+
+      return [
+        {
+          toolName: "initiate_return",
+          toolArgs: { orderId: matchedOrder.id, orderName: matchedOrder.name, itemId: matchedItem.id, itemTitle: matchedItem.title, reason: reasonKey, action },
+          toolResult: {
+            success: true,
+            returnId,
+            orderName: matchedOrder.name,
+            itemTitle: matchedItem.title,
+            action,
+            reason: reasonKey,
+            instructions: {
+              step1: "Pack the item in its original packaging",
+              step2: "Print the prepaid return label (sent to your email)",
+              step3: "Drop off at any UPS location",
+              deadline: "Please ship within 14 days — refund processed within 5 business days of receipt",
+            },
+            labelUrl: `https://example.com/label/${returnId}`,
+          },
+        },
+        { text: `Your return for ${matchedItem.title} has been created (reason: ${reasonLabel}). Pack it up and drop it at any UPS location within 14 days — your refund will be processed within 5 business days after we receive the item.` },
+      ];
+    }
+  }
+
+  // ── Step 4: Post-return follow-up ──
+  if (hasReturn) {
+    return [{ text: "Your request has been processed! Is there anything else I can help you with?" }];
   }
 
   return [
@@ -297,6 +460,10 @@ function buildMockSSE(steps: MockStep[]): string {
     for (const step of toolSteps) {
       const callId = nextId("call");
       lines.push(`data: ${JSON.stringify({ type: "tool-input-start", toolCallId: callId, toolName: step.toolName })}\n`);
+      // Emit deltas so the UI message stream parser builds a proper tool-call UI part.
+      const inputJson = JSON.stringify(step.toolArgs || {});
+      lines.push(`data: ${JSON.stringify({ type: "tool-input-delta", toolCallId: callId, inputTextDelta: "" })}\n`);
+      lines.push(`data: ${JSON.stringify({ type: "tool-input-delta", toolCallId: callId, inputTextDelta: inputJson })}\n`);
       lines.push(`data: ${JSON.stringify({ type: "tool-input-available", toolCallId: callId, toolName: step.toolName, input: step.toolArgs || {} })}\n`);
       lines.push(`data: ${JSON.stringify({ type: "tool-output-available", toolCallId: callId, output: step.toolResult })}\n`);
     }
@@ -336,7 +503,7 @@ function buildErrorSSE(message: string): string {
 }
 
 function buildUsageLimitSSE(): string {
-  return buildErrorSSE("Your free tier limit has been reached for this month (50 tickets). To continue using Auri, please contact us at support@imauri.com to upgrade your plan.");
+  return buildErrorSSE("This store has reached its monthly free tier limit (50 tickets). Please contact the store owner to continue using chat support.");
 }
 
 function sseResponse(body: string) {
@@ -363,52 +530,101 @@ function resolveShop(shopDomain?: string): ResolvedShop | null {
 }
 
 export async function POST(req: Request) {
-  if (!checkRateLimit(req)) {
+  const bodyText = await req.text();
+  if (bodyText.length > 200_000) {
+    return sseResponse(buildErrorSSE("Request is too large. Please reload the page and try again."));
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return sseResponse(buildErrorSSE("Invalid request payload."));
+  }
+
+  const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  const messages = obj.messages;
+  const shopParam = obj.shop;
+  const customerEmail = obj.customerEmail;
+  const widgetToken = obj.widgetToken;
+
+  const shopParamStr = typeof shopParam === "string" ? shopParam : undefined;
+  const customerEmailStr = typeof customerEmail === "string" ? customerEmail : undefined;
+
+  if (!checkRateLimit(req, shopParamStr)) {
     return sseResponse(buildErrorSSE("Too many requests. Please wait a moment and try again."));
   }
 
-  const { messages, shop: shopParam, customerEmail, widgetToken } = await req.json();
+  type UiRole = "system" | "user" | "assistant";
+  const isUiRole = (r: unknown): r is UiRole => r === "system" || r === "user" || r === "assistant";
 
-  if (shopParam && shopParam !== "demo-store") {
-    if (!isValidShopDomain(shopParam)) {
+  type UiMsg = Record<string, unknown> & {
+    role: UiRole;
+    content?: string;
+    parts?: Array<{ type: string; text?: string }>;
+  };
+
+  const msgsRaw = Array.isArray(messages) ? (messages as unknown[]) : [];
+  const msgs: UiMsg[] = msgsRaw.filter((m): m is UiMsg => {
+    if (!m || typeof m !== "object") return false;
+    const r = (m as Record<string, unknown>).role;
+    return isUiRole(r);
+  });
+
+  if (msgs.length > 40) {
+    return sseResponse(buildErrorSSE("Conversation is too long. Please refresh and start a new chat."));
+  }
+
+  if (shopParamStr && shopParamStr !== "demo-store") {
+    if (!isValidShopDomain(shopParamStr)) {
       return sseResponse(buildErrorSSE("Invalid store configuration."));
     }
-    if (!widgetToken || !verifyWidgetToken(shopParam, widgetToken)) {
+    if (typeof widgetToken !== "string" || !verifyWidgetToken(shopParamStr, widgetToken)) {
       return sseResponse(buildErrorSSE("Unauthorized access. Please reload the page."));
     }
   }
 
-  const liveShop = resolveShop(shopParam);
+  const liveShop = resolveShop(shopParamStr);
   const shopId = liveShop?.domain || "demo-store";
   const shopSettings = liveShop ? getSettings(shopId) : undefined;
 
   if (liveShop) {
     const usage = getUsageSummary(shopId);
     if (usage.freeRemaining <= 0) {
-      return sseResponse(buildUsageLimitSSE());
+      const cached = getBilling(shopId);
+      const b = billingStale(cached, 30 * 60 * 1000) ? await syncBillingFromShopify(shopId) : cached;
+      const paid = !!b && (b.status === "active" || b.status === "trialing");
+      if (!paid) {
+        return sseResponse(buildUsageLimitSSE());
+      }
     }
   }
 
   // Demo mode: no connected live shop, OR no valid LLM API key
   if (!liveShop || !isLlmKeyValid()) {
-    const steps = buildMockSteps(messages);
+    const steps = buildMockSteps(msgs);
     return sseResponse(buildMockSSE(steps));
   }
 
-  const { streamText, tool, stepCountIs, convertToModelMessages } = await import("ai");
-  const { z } = await import("zod");
+  const { streamText, tool, stepCountIs, convertToModelMessages, jsonSchema } = await import("ai");
   const { apiKey, baseURL, model: modelName } = getLlmConfig();
 
-  // Support OpenAI-compatible gateways (e.g. OpenRouter/Arouter) via LLM_BASE_URL + LLM_API_KEY.
-  // Keep backward-compat with OPENAI_API_KEY when LLM_API_KEY is not set.
   const provider = async () => {
+    if (baseURL) {
+      const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
+      return createOpenAICompatible({
+        name: "llm",
+        baseURL,
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+    }
     const mod = await import("@ai-sdk/openai");
     const m = mod as unknown as {
-      createOpenAI?: (opts: { apiKey?: string; baseURL?: string }) => (model: string) => unknown;
+      createOpenAI?: (opts: { apiKey?: string; baseURL?: string; compatibility?: string }) => (model: string) => unknown;
       openai: (model: string) => unknown;
     };
     if (typeof m.createOpenAI === "function") {
-      return m.createOpenAI({ apiKey, baseURL });
+      return m.createOpenAI({ apiKey, compatibility: "compatible" });
     }
     return m.openai;
   };
@@ -416,19 +632,38 @@ export async function POST(req: Request) {
   // Cache fetched orders for the session so track_shipment can reference them
   let cachedOrders: OrderForDisplay[] = [];
 
+  type TextPart = { type: "text"; text: string };
+  const msgsForModel = msgs.map((m) => {
+    const parts: TextPart[] = [];
+    if (Array.isArray(m.parts)) {
+      for (const p of m.parts) {
+        if (!p || typeof p !== "object") continue;
+        const po = p as Record<string, unknown>;
+        if (po.type === "text" && typeof po.text === "string" && po.text.length > 0) {
+          parts.push({ type: "text", text: po.text });
+        }
+      }
+    }
+    if (parts.length === 0) {
+      parts.push({ type: "text", text: String(m.content ?? "") });
+    }
+    return { role: m.role, parts };
+  });
+
   const result = streamText({
     // @ts-expect-error provider returns a model factory compatible with streamText
     model: (await provider())(modelName),
-    system: buildSystemPrompt(liveShop ? customerEmail : undefined, shopSettings),
-    messages: await convertToModelMessages(messages),
+    system: buildSystemPrompt(liveShop ? customerEmailStr : undefined, shopSettings),
+    messages: await convertToModelMessages(msgsForModel),
     stopWhen: stepCountIs(5),
     tools: {
       lookup_orders: tool({
         description: "Look up customer's recent orders by email.",
-        parameters: z.object({
-          email: z.string().describe("Customer email"),
+        inputSchema: jsonSchema<{ email: string }>({
+          type: "object" as const,
+          properties: { email: { type: "string", description: "Customer email" } },
+          required: ["email"],
         }),
-        // @ts-expect-error AI SDK v6 + zod type mismatch
         execute: async (args: { email: string }) => {
           if (liveShop) {
             try {
@@ -449,17 +684,20 @@ export async function POST(req: Request) {
       }),
 
       initiate_return: tool({
-        description: "Create a return or exchange request for an item.",
-        parameters: z.object({
-          orderId: z.number(),
-          orderName: z.string(),
-          itemId: z.number(),
-          itemTitle: z.string(),
-          reason: z.enum(["wrong_size", "damaged", "wrong_item", "changed_mind", "other"]),
-          action: z.enum(["return", "exchange"]),
-          exchangeDetails: z.string().optional().describe("For exchanges: new size/color"),
+        description: "Create a return or exchange request for an item. For exchanges, include exchangeDetails like \"Size 10\" or \"Color: Black, Size: L\" after confirming with the customer.",
+        inputSchema: jsonSchema<{ orderId: number; orderName: string; itemId: number; itemTitle: string; reason: string; action: string; exchangeDetails?: string }>({
+          type: "object" as const,
+          properties: {
+            orderId: { type: "number" },
+            orderName: { type: "string" },
+            itemId: { type: "number" },
+            itemTitle: { type: "string" },
+            reason: { type: "string", enum: ["wrong_size", "damaged", "wrong_item", "changed_mind", "other"] },
+            action: { type: "string", enum: ["return", "exchange"] },
+            exchangeDetails: { type: "string", description: "For exchanges: new size/color" },
+          },
+          required: ["orderId", "orderName", "itemId", "itemTitle", "reason", "action"],
         }),
-        // @ts-expect-error AI SDK v6 + zod type mismatch
         execute: async (args: { orderId: number; orderName: string; itemId: number; itemTitle: string; reason: string; action: string; exchangeDetails?: string }) => {
           trackTicket(shopId);
           const ticketType = args.action === "exchange" ? "exchange" as const : "return" as const;
@@ -467,10 +705,10 @@ export async function POST(req: Request) {
             try {
               const result = await liveShop.client.createReturn(args.orderId, args.itemId, args.reason, args.exchangeDetails);
               const retId = `RET-${Date.now().toString(36).toUpperCase()}`;
-              saveTicket({ id: retId, shop: shopId, customerEmail: customerEmail || "unknown", orderName: args.orderName, type: ticketType, status: result.success ? "resolved" : "pending", summary: `${args.action}: ${args.itemTitle} — ${args.reason}`, createdAt: new Date().toISOString() });
+              saveTicket({ id: retId, shop: shopId, customerEmail: customerEmailStr || "unknown", orderName: args.orderName, type: ticketType, status: result.success ? "resolved" : "pending", summary: `${args.action}: ${args.itemTitle} — ${args.reason}`, createdAt: new Date().toISOString() });
               logEvent({ name: "ticket_created", shop: shopId, props: { type: ticketType, status: result.success ? "resolved" : "pending", source: "shopify" } });
               if (result.success && shopSettings?.notifyOnReturn && shopSettings.notifyEmail) {
-                notifyMerchantReturn({ shopDomain: shopId, notifyEmail: shopSettings.notifyEmail, customerEmail: customerEmail || "unknown", orderName: args.orderName, itemTitle: args.itemTitle, action: ticketType, reason: args.reason, exchangeDetails: args.exchangeDetails, returnId: retId }).catch(() => {});
+                notifyMerchantReturn({ shopDomain: shopId, notifyEmail: shopSettings.notifyEmail, customerEmail: customerEmailStr || "unknown", orderName: args.orderName, itemTitle: args.itemTitle, action: ticketType, reason: args.reason, exchangeDetails: args.exchangeDetails, returnId: retId }).catch(() => {});
               }
               return {
                 ...result,
@@ -518,11 +756,14 @@ export async function POST(req: Request) {
 
       track_shipment: tool({
         description: "Get tracking info for an order.",
-        parameters: z.object({
-          orderId: z.number(),
-          orderName: z.string(),
+        inputSchema: jsonSchema<{ orderId: number; orderName: string }>({
+          type: "object" as const,
+          properties: {
+            orderId: { type: "number" },
+            orderName: { type: "string" },
+          },
+          required: ["orderId", "orderName"],
         }),
-        // @ts-expect-error AI SDK v6 + zod type mismatch
         execute: async (args: { orderId: number; orderName: string }) => {
           if (liveShop) {
             try {
@@ -548,17 +789,20 @@ export async function POST(req: Request) {
 
       escalate_to_human: tool({
         description: "Escalate the conversation to a human agent when AI cannot resolve the issue.",
-        parameters: z.object({
-          reason: z.string().describe("Why escalation is needed"),
-          summary: z.string().describe("Summary of the conversation and what the customer needs"),
+        inputSchema: jsonSchema<{ reason: string; summary: string }>({
+          type: "object" as const,
+          properties: {
+            reason: { type: "string", description: "Why escalation is needed" },
+            summary: { type: "string", description: "Summary of the conversation and what the customer needs" },
+          },
+          required: ["reason", "summary"],
         }),
-        // @ts-expect-error AI SDK v6 + zod type mismatch
         execute: async (args: { reason: string; summary: string }) => {
           const ticketId = `ESC-${Date.now().toString(36).toUpperCase()}`;
           saveTicket({
             id: ticketId,
             shop: shopId,
-            customerEmail: customerEmail || "unknown",
+            customerEmail: customerEmailStr || "unknown",
             orderName: "",
             type: "inquiry",
             status: "pending",
@@ -567,7 +811,7 @@ export async function POST(req: Request) {
           });
           logEvent({ name: "ticket_created", shop: shopId, props: { type: "inquiry", status: "pending", source: liveShop ? "shopify" : "demo", escalated: true } });
           if (shopSettings?.notifyOnReturn && shopSettings.notifyEmail) {
-            notifyMerchantEscalation({ shopDomain: shopId, notifyEmail: shopSettings.notifyEmail, ticketId, reason: args.reason, summary: args.summary, customerEmail: customerEmail || "unknown" }).catch(() => {});
+            notifyMerchantEscalation({ shopDomain: shopId, notifyEmail: shopSettings.notifyEmail, ticketId, reason: args.reason, summary: args.summary, customerEmail: customerEmailStr || "unknown" }).catch(() => {});
           }
           return {
             success: true,

@@ -62,29 +62,68 @@ export function verifySession(cookie: string): string | null {
 
 // --- Widget token (daily expiry) ---
 
-function todayUTC(): string {
-  return new Date().toISOString().slice(0, 10);
+const WIDGET_TOKEN_V2_PREFIX = "v2";
+const WIDGET_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const WIDGET_TOKEN_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
+function nowMs(): number {
+  return Date.now();
 }
 
-function yesterdayUTC(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+function generateNonceHex(bytes = 12): string {
+  return randomBytes(bytes).toString("hex");
 }
 
+/**
+ * Widget token v2 format:
+ *   v2.<issuedAtMs>.<nonceHex>.<hmacHex>
+ *
+ * - Short-lived (TTL) to reduce risk if it leaks via logs/referer.
+ * - Still "public" by nature (must work on storefront), so don't treat as a secret auth mechanism.
+ */
 export function generateWidgetToken(shop: string): string {
-  return hmacSHA256(`widget:${shop}:${todayUTC()}`, getSecret("SESSION_SECRET"));
+  const secret = getSecret("SESSION_SECRET");
+  const ts = String(nowMs());
+  const nonce = generateNonceHex();
+  const sig = hmacSHA256(`widget:${WIDGET_TOKEN_V2_PREFIX}:${shop}:${ts}:${nonce}`, secret);
+  return `${WIDGET_TOKEN_V2_PREFIX}.${ts}.${nonce}.${sig}`;
 }
 
 export function verifyWidgetToken(shop: string, token: string): boolean {
+  if (!token) return false;
   const secret = getSecret("SESSION_SECRET");
-  const today = hmacSHA256(`widget:${shop}:${todayUTC()}`, secret);
-  if (timingSafeEqual(today, token)) return true;
-  const yesterday = hmacSHA256(`widget:${shop}:${yesterdayUTC()}`, secret);
-  return timingSafeEqual(yesterday, token);
+
+  // v2
+  if (token.startsWith(`${WIDGET_TOKEN_V2_PREFIX}.`)) {
+    const parts = token.split(".");
+    if (parts.length !== 4) return false;
+    const [, tsRaw, nonce, sig] = parts;
+    const ts = Number(tsRaw);
+    if (!Number.isFinite(ts) || ts <= 0) return false;
+    if (!nonce || nonce.length > 64) return false;
+    if (!sig || sig.length > 128) return false;
+
+    const age = Math.abs(nowMs() - ts);
+    if (age > (WIDGET_TOKEN_TTL_MS + WIDGET_TOKEN_SKEW_MS)) return false;
+
+    const expected = hmacSHA256(`widget:${WIDGET_TOKEN_V2_PREFIX}:${shop}:${tsRaw}:${nonce}`, secret);
+    return timingSafeEqual(expected, sig);
+  }
+
+  // v1 (legacy): daily token with yesterday grace period
+  // Keep for backward compatibility with already-embedded scripts.
+  const today = new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  const yesterday = d.toISOString().slice(0, 10);
+
+  const t = hmacSHA256(`widget:${shop}:${today}`, secret);
+  if (timingSafeEqual(t, token)) return true;
+  const y = hmacSHA256(`widget:${shop}:${yesterday}`, secret);
+  return timingSafeEqual(y, token);
 }
 
-// --- AES encryption for access tokens ---
+// --- AES encryption for PII fields and access tokens ---
 
 const AES_ALGO = "aes-256-cbc";
 
@@ -108,6 +147,43 @@ export function decryptToken(ciphertext: string): string {
   const encrypted = Buffer.from(encHex, "hex");
   const decipher = createDecipheriv(AES_ALGO, key, iv);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+}
+
+// --- PII field encryption (customer emails stored at rest) ---
+
+const PII_PREFIX = "pii:";
+
+export function encryptPII(plaintext: string): string {
+  if (!plaintext) return plaintext;
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) return plaintext;
+  try {
+    const key = deriveAESKey(secret);
+    const iv = randomBytes(16);
+    const cipher = createCipheriv(AES_ALGO, key, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    return `${PII_PREFIX}${iv.toString("hex")}:${encrypted.toString("hex")}`;
+  } catch {
+    return plaintext;
+  }
+}
+
+export function decryptPII(stored: string): string {
+  if (!stored || !stored.startsWith(PII_PREFIX)) return stored;
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) return stored;
+  try {
+    const payload = stored.slice(PII_PREFIX.length);
+    const [ivHex, encHex] = payload.split(":");
+    if (!ivHex || !encHex) return stored;
+    const key = deriveAESKey(secret);
+    const iv = Buffer.from(ivHex, "hex");
+    const encrypted = Buffer.from(encHex, "hex");
+    const decipher = createDecipheriv(AES_ALGO, key, iv);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  } catch {
+    return stored;
+  }
 }
 
 // --- Timing-safe comparison ---

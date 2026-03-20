@@ -7,18 +7,51 @@ import { Bot, ArrowRight, Mail, AlertCircle, MessageSquare } from "lucide-react"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function readTokenFromLocationHash(): string {
+  if (typeof window === "undefined") return "";
+  const hash = window.location.hash || "";
+  if (!hash.startsWith("#")) return "";
+  const qs = hash.slice(1);
+  const sp = new URLSearchParams(qs);
+  return sp.get("token") || "";
+}
+
 export default function WidgetPage() {
   const params = useParams<{ shop: string }>();
   const searchParams = useSearchParams();
   const shop = decodeURIComponent(params.shop);
-  const token = searchParams.get("token") || "";
+  const tokenFromQuery = searchParams.get("token") || "";
+  const [token, setToken] = useState(tokenFromQuery);
 
   const [email, setEmail] = useState("");
   const [started, setStarted] = useState(false);
   const [valid, setValid] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch(`/api/widget/verify?shop=${encodeURIComponent(shop)}&token=${encodeURIComponent(token)}`)
+    // Support tokens passed either as query (?token=) or hash (#token=).
+    if (!tokenFromQuery) {
+      const fromHash = readTokenFromLocationHash();
+      if (fromHash) setToken(fromHash);
+      const onHashChange = () => {
+        const next = readTokenFromLocationHash();
+        if (next) setToken(next);
+      };
+      window.addEventListener("hashchange", onHashChange);
+      return () => window.removeEventListener("hashchange", onHashChange);
+    }
+    return;
+  }, [tokenFromQuery]);
+
+  useEffect(() => {
+    if (!token) {
+      setValid(false);
+      return;
+    }
+    fetch("/api/widget/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shop, token }),
+    })
       .then((r) => {
         setValid(r.ok);
         if (r.ok) {
